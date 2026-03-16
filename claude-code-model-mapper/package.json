@@ -1,0 +1,110 @@
+{
+  "name": "claude-code-model-mapper",
+  "displayName": "Claude Code Model Mapper",
+  "description": "Map Claude Code models to alternative LLM providers via a local proxy server",
+  "version": "0.1.0",
+  "publisher": "kiro",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudeCodeModelMapper.startProxy",
+        "title": "Start Proxy",
+        "category": "Claude Code Model Mapper"
+      },
+      {
+        "command": "claudeCodeModelMapper.stopProxy",
+        "title": "Stop Proxy",
+        "category": "Claude Code Model Mapper"
+      },
+      {
+        "command": "claudeCodeModelMapper.openTrafficPanel",
+        "title": "Open Traffic Panel",
+        "category": "Claude Code Model Mapper"
+      },
+      {
+        "command": "claudeCodeModelMapper.openConfigPanel",
+        "title": "Open Config Panel",
+        "category": "Claude Code Model Mapper"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Code Model Mapper",
+      "properties": {
+        "claudeCodeModelMapper.proxyPort": {
+          "type": "number",
+          "default": 3456,
+          "description": "Port cho proxy server. Nếu bị chiếm, sẽ thử port tiếp theo."
+        },
+        "claudeCodeModelMapper.proxyPortRangeEnd": {
+          "type": "number",
+          "default": 3466,
+          "description": "Port tối đa trong dải thử."
+        },
+        "claudeCodeModelMapper.modelConfigs": {
+          "type": "array",
+          "default": [],
+          "description": "Danh sách cấu hình ánh xạ model.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "sourceModel": { "type": "string", "description": "Tên model Claude Code gốc" },
+              "targetModel": { "type": "string", "description": "Tên model thực tế để xử lý request" },
+              "enabled": { "type": "boolean", "default": true, "description": "Bật/tắt mapping này" }
+            },
+            "required": ["sourceModel", "targetModel"]
+          }
+        },
+        "claudeCodeModelMapper.lmProvider": {
+          "type": "object",
+          "default": { "baseUrl": "https://openrouter.ai/api/v1" },
+          "description": "Cấu hình LM Provider.",
+          "properties": {
+            "baseUrl": { "type": "string", "description": "Base URL của LM Provider" }
+          }
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeCodeModelMapper",
+          "title": "Claude Code Model Mapper",
+          "icon": "$(radio-tower)"
+        }
+      ]
+    },
+    "views": {
+      "claudeCodeModelMapper": [
+        {
+          "type": "webview",
+          "id": "claudeCodeModelMapper.trafficPanel",
+          "name": "Traffic Panel"
+        },
+        {
+          "type": "webview",
+          "id": "claudeCodeModelMapper.configPanel",
+          "name": "Config Panel"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "node --test out/test/**/*.test.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "fast-check": "^3.15.0",
+    "typescript": "^5.3.0"
+  }
+}
