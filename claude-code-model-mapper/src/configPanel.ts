@@ -34,7 +34,8 @@ export class ConfigPanel implements vscode.WebviewViewProvider {
   private async sendInit(): Promise<void> {
     const configs = this.store.getModelConfigs();
     const lmProvider = this.store.getLMProviderConfig();
-    this.post({ type: 'init', configs, lmProvider });
+    const apiKey = await this.store.getApiKey();
+    this.post({ type: 'init', configs, lmProvider, hasApiKey: !!apiKey });
   }
 
   private async handleSaveConfigs(configs: ModelConfig[]): Promise<void> {
@@ -60,8 +61,9 @@ export class ConfigPanel implements vscode.WebviewViewProvider {
       return;
     }
     await this.store.setLMProviderConfig(config);
-    if (apiKey !== undefined && apiKey !== '') {
-      await this.store.setApiKey(apiKey);
+    // Only update key if user typed a new non-empty value
+    if (apiKey !== undefined && apiKey.trim() !== '') {
+      await this.store.setApiKey(apiKey.trim());
     }
     this.post({ type: 'saved' });
     this.onConfigChangedCallback?.();
@@ -175,6 +177,10 @@ function getHtml(): string {
       configs = msg.configs || [];
       renderMappings();
       if (msg.lmProvider) document.getElementById('baseUrl').value = msg.lmProvider.baseUrl || '';
+      if (msg.hasApiKey) {
+        const keyInput = document.getElementById('apiKey');
+        keyInput.placeholder = '••••••••  (saved — leave blank to keep)';
+      }
     } else if (msg.type === 'saved') {
       showMsg('mapMsg', 'Đã lưu.', false);
       showMsg('provMsg', 'Đã lưu.', false);

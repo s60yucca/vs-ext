@@ -81,7 +81,12 @@ async function activate(context) {
             await syncProxyConfig();
             const port = await proxy.start(store.getProxyOptions());
             statusBar.setRunning(port);
-            vscode.window.showInformationMessage(`Claude Code Model Mapper: Proxy đang chạy tại http://127.0.0.1:${port}`);
+            configureClaudeCode(port);
+            vscode.window.showInformationMessage(`Claude Code Model Mapper: Proxy đang chạy tại http://127.0.0.1:${port}`, 'Copy URL').then(choice => {
+                if (choice === 'Copy URL') {
+                    vscode.env.clipboard.writeText(`http://127.0.0.1:${port}`);
+                }
+            });
         }
         catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -104,6 +109,20 @@ async function activate(context) {
     }));
     // Auto-start on activation
     await startProxy();
+    // After proxy starts, configure Claude Code env
+    proxy.once('restarted', (port) => configureClaudeCode(port));
+}
+function configureClaudeCode(port) {
+    const url = `http://127.0.0.1:${port}`;
+    const terminalEnv = vscode.workspace.getConfiguration('terminal.integrated.env');
+    const platform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'osx' : 'linux';
+    const current = terminalEnv.get(platform, {});
+    terminalEnv.update(platform, {
+        ...current,
+        ANTHROPIC_BASE_URL: url,
+        ANTHROPIC_API_KEY: current['ANTHROPIC_API_KEY'] || 'dummy',
+        ANTHROPIC_AUTH_TOKEN: '', // clear conflicting token
+    }, vscode.ConfigurationTarget.Workspace);
 }
 async function deactivate() {
     // Disposables in context.subscriptions are cleaned up automatically by VS Code

@@ -5,9 +5,9 @@ const SECRET_KEY = 'claudeCodeModelMapper.apiKey';
 const CFG = 'claudeCodeModelMapper';
 
 export const DEFAULT_MODEL_CONFIGS: ModelConfig[] = [
-  { sourceModel: 'claude-haiku',  targetModel: 'minimax/minimax-m2.5',   enabled: true },
-  { sourceModel: 'claude-sonnet', targetModel: 'deepseek/deepseek-v3.2', enabled: true },
-  { sourceModel: 'claude-opus',   targetModel: 'z-ai/glm5',              enabled: true },
+  { sourceModel: 'claude-haiku',  targetModel: 'minimax/minimax-m2.5',                    enabled: true },
+  { sourceModel: 'claude-sonnet', targetModel: 'meta-llama/llama-3.3-70b-instruct',       enabled: true },
+  { sourceModel: 'claude-opus',   targetModel: 'nvidia/llama-3.1-nemotron-ultra-253b',    enabled: true },
 ];
 
 export class ConfigStore {

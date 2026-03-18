@@ -39,7 +39,7 @@ export type ConfigPanelMessage =
 
 // Extension → Webview
 export type ConfigPanelResponse =
-  | { type: 'init'; configs: ModelConfig[]; lmProvider: LMProviderConfig }
+  | { type: 'init'; configs: ModelConfig[]; lmProvider: LMProviderConfig; hasApiKey: boolean }
   | { type: 'saved' }
   | { type: 'error'; message: string };
 

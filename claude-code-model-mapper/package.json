@@ -75,7 +75,7 @@
         {
           "id": "claudeCodeModelMapper",
           "title": "Claude Code Model Mapper",
-          "icon": "$(radio-tower)"
+          "icon": "images/icon.svg"
         }
       ]
     },

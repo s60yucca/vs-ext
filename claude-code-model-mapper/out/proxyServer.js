@@ -158,7 +158,10 @@ class ProxyServer extends events_1.EventEmitter {
     }
     forwardRequest(req, body, res, id) {
         const base = this.providerConfig.baseUrl.replace(/\/$/, '');
-        const url = new URL(base + (req.url || '/'));
+        // Claude Code sends /v1/messages — strip leading /v1 to avoid duplication
+        // when base URL already contains /v1 (e.g. https://openrouter.ai/api/v1)
+        const reqPath = (req.url || '/').replace(/^\/v1/, '');
+        const url = new URL(base + reqPath);
         const isHttps = url.protocol === 'https:';
         const transport = isHttps ? https : http;
         const headers = {};
