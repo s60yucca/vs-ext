@@ -119,21 +119,29 @@ export class ProxyServer extends EventEmitter {
 
       this.emitUpdate(id, { sourceModel, targetModel, status: 'processing' });
 
-      const rewrittenBody = JSON.stringify(parsed);
-      this.forwardRequest(req, rewrittenBody, res, id);
+      // Convert Anthropic /messages format → OpenAI /chat/completions format
+      const isMessagesEndpoint = (req.url || '').includes('/messages');
+      let rewrittenBody: string;
+      let rewrittenUrl = req.url || '/';
+      if (isMessagesEndpoint) {
+        parsed = anthropicToOpenAI(parsed);
+        rewrittenUrl = rewrittenUrl.replace('/messages', '/chat/completions').replace(/\?.*$/, '');
+      }
+      rewrittenBody = JSON.stringify(parsed);
+
+      this.forwardRequest(req, rewrittenBody, rewrittenUrl, res, id);
     });
   }
 
   private forwardRequest(
     req: http.IncomingMessage,
     body: string,
+    rewrittenUrl: string,
     res: http.ServerResponse,
     id: string
   ): void {
     const base = this.providerConfig.baseUrl.replace(/\/$/, '');
-    // Claude Code sends /v1/messages.
-    // Strip leading /v1 only when the base URL already ends with /v1 to avoid duplication.
-    const incomingPath = req.url || '/';
+    const incomingPath = rewrittenUrl;
     const reqPath = base.endsWith('/v1') ? incomingPath.replace(/^\/v1/, '') : incomingPath;
     const url = new URL(base + reqPath);
     const isHttps = url.protocol === 'https:';
@@ -155,6 +163,7 @@ export class ProxyServer extends EventEmitter {
       path: url.pathname + url.search,
       method: req.method,
       headers,
+      timeout: 120_000, // 2 minutes — free models can be slow
     };
 
     const proxyReq = transport.request(options, proxyRes => {
@@ -181,6 +190,10 @@ export class ProxyServer extends EventEmitter {
       }
     });
 
+    proxyReq.on('timeout', () => {
+      proxyReq.destroy(new Error('Read timeout — upstream did not respond in time'));
+    });
+
     proxyReq.on('error', err => {
       if (!res.headersSent) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -196,4 +209,48 @@ export class ProxyServer extends EventEmitter {
   private emitUpdate(id: string, update: Partial<RequestEvent>): void {
     this.emit('requestUpdate', { id, update });
   }
+}
+
+// Convert Anthropic Messages API body → OpenAI Chat Completions body
+function anthropicToOpenAI(body: Record<string, unknown>): Record<string, unknown> {
+  const messages: Array<{ role: string; content: unknown }> = [];
+
+  // system prompt → system message
+  if (body['system']) {
+    const sys = body['system'];
+    const text = typeof sys === 'string' ? sys
+      : Array.isArray(sys) ? (sys as Array<{ text?: string }>).map(b => b.text || '').join('\n')
+      : String(sys);
+    messages.push({ role: 'system', content: text });
+  }
+
+  // Anthropic messages → OpenAI messages
+  for (const msg of (body['messages'] as Array<{ role: string; content: unknown }> || [])) {
+    const content = msg.content;
+    if (typeof content === 'string') {
+      messages.push({ role: msg.role, content });
+    } else if (Array.isArray(content)) {
+      // Flatten content blocks to a single string for simplicity
+      const text = (content as Array<{ type: string; text?: string }>)
+        .filter(b => b.type === 'text')
+        .map(b => b.text || '')
+        .join('\n');
+      messages.push({ role: msg.role, content: text });
+    } else {
+      messages.push({ role: msg.role, content: String(content) });
+    }
+  }
+
+  const result: Record<string, unknown> = {
+    model: body['model'],
+    messages,
+    stream: body['stream'] ?? false,
+  };
+
+  if (body['max_tokens']) { result['max_tokens'] = body['max_tokens']; }
+  if (body['temperature'] !== undefined) { result['temperature'] = body['temperature']; }
+  if (body['top_p'] !== undefined) { result['top_p'] = body['top_p']; }
+  if (body['stop_sequences']) { result['stop'] = body['stop_sequences']; }
+
+  return result;
 }
