@@ -88,6 +88,7 @@ function getHtml(): string {
   .badge-error     { background: #a1260d; color: #fff; }
   .duration { opacity: 0.5; font-size: 10px; margin-left: 6px; }
   .empty { opacity: 0.4; text-align: center; margin-top: 24px; font-size: 12px; }
+  .error-msg { margin-top: 3px; color: #f48771; font-size: 10px; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -130,6 +131,7 @@ function getHtml(): string {
           <span class="arrow">→</span>
           <span>\${r.targetModel || '?'}</span>
         </div>
+        \${r.error ? \`<div class="error-msg">\${r.error}</div>\` : ''}
       </div>\`;
     }).join('');
   }

@@ -157,12 +157,27 @@ export class ProxyServer extends EventEmitter {
     };
 
     const proxyReq = transport.request(options, proxyRes => {
-      res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-      proxyRes.pipe(res);
-      proxyRes.on('end', () => {
-        const status: RequestStatus = (proxyRes.statusCode || 200) >= 400 ? 'error' : 'completed';
-        this.emitUpdate(id, { status, endTime: Date.now() });
-      });
+      const isError = (proxyRes.statusCode || 200) >= 400;
+      if (isError) {
+        let errBody = '';
+        proxyRes.on('data', chunk => { errBody += chunk; });
+        proxyRes.on('end', () => {
+          let errMsg = `HTTP ${proxyRes.statusCode}`;
+          try {
+            const parsed = JSON.parse(errBody);
+            errMsg = parsed?.error?.message || parsed?.message || errMsg;
+          } catch { /* use status code */ }
+          res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
+          res.end(errBody);
+          this.emitUpdate(id, { status: 'error', error: errMsg, endTime: Date.now() });
+        });
+      } else {
+        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+        proxyRes.pipe(res);
+        proxyRes.on('end', () => {
+          this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+        });
+      }
     });
 
     proxyReq.on('error', err => {

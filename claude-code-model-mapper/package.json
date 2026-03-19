@@ -7,8 +7,12 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -53,19 +57,37 @@
           "items": {
             "type": "object",
             "properties": {
-              "sourceModel": { "type": "string", "description": "Tên model Claude Code gốc" },
-              "targetModel": { "type": "string", "description": "Tên model thực tế để xử lý request" },
-              "enabled": { "type": "boolean", "default": true, "description": "Bật/tắt mapping này" }
+              "sourceModel": {
+                "type": "string",
+                "description": "Tên model Claude Code gốc"
+              },
+              "targetModel": {
+                "type": "string",
+                "description": "Tên model thực tế để xử lý request"
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Bật/tắt mapping này"
+              }
             },
-            "required": ["sourceModel", "targetModel"]
+            "required": [
+              "sourceModel",
+              "targetModel"
+            ]
           }
         },
         "claudeCodeModelMapper.lmProvider": {
           "type": "object",
-          "default": { "baseUrl": "https://openrouter.ai/api/v1" },
+          "default": {
+            "baseUrl": "https://openrouter.ai/api/v1"
+          },
           "description": "Cấu hình LM Provider.",
           "properties": {
-            "baseUrl": { "type": "string", "description": "Base URL của LM Provider" }
+            "baseUrl": {
+              "type": "string",
+              "description": "Base URL của LM Provider"
+            }
           }
         }
       }
@@ -100,11 +122,10 @@
     "watch": "tsc -watch -p ./",
     "test": "node --test out/test/**/*.test.js"
   },
-  "dependencies": {},
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "fast-check": "^3.15.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.9.3"
   }
 }
