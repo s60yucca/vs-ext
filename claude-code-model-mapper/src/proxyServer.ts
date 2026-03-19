@@ -123,13 +123,14 @@ export class ProxyServer extends EventEmitter {
       const isMessagesEndpoint = (req.url || '').includes('/messages');
       let rewrittenBody: string;
       let rewrittenUrl = req.url || '/';
+      const isStreaming = !!(parsed['stream']);
       if (isMessagesEndpoint) {
         parsed = anthropicToOpenAI(parsed);
         rewrittenUrl = rewrittenUrl.replace('/messages', '/chat/completions').replace(/\?.*$/, '');
       }
       rewrittenBody = JSON.stringify(parsed);
 
-      this.forwardRequest(req, rewrittenBody, rewrittenUrl, res, id);
+      this.forwardRequest(req, rewrittenBody, rewrittenUrl, isMessagesEndpoint, isStreaming, res, id);
     });
   }
 
@@ -137,6 +138,8 @@ export class ProxyServer extends EventEmitter {
     req: http.IncomingMessage,
     body: string,
     rewrittenUrl: string,
+    convertResponse: boolean,
+    isStreaming: boolean,
     res: http.ServerResponse,
     id: string
   ): void {
@@ -182,11 +185,86 @@ export class ProxyServer extends EventEmitter {
           this.emitUpdate(id, { status: 'error', error: errMsg, endTime: Date.now() });
         });
       } else {
-        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-        proxyRes.pipe(res);
-        proxyRes.on('end', () => {
-          this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
-        });
+        if (convertResponse && isStreaming) {
+          // Stream: convert OpenAI SSE chunks → Anthropic SSE events
+          res.writeHead(proxyRes.statusCode || 200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+          let buffer = '';
+          let inputTokens = 0;
+          let outputTokens = 0;
+          let sentStart = false;
+          const model = body ? (JSON.parse(body)['model'] as string) || '' : '';
+          proxyRes.on('data', (chunk: Buffer) => {
+            buffer += chunk.toString();
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) { continue; }
+              const data = line.slice(6).trim();
+              if (data === '[DONE]') {
+                // send final delta stop + message_delta + message_stop
+                res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+                res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
+                res.write(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+                return;
+              }
+              try {
+                const chunk = JSON.parse(data);
+                if (chunk.usage) {
+                  inputTokens = chunk.usage.prompt_tokens || 0;
+                  outputTokens = chunk.usage.completion_tokens || 0;
+                }
+                const delta = chunk.choices?.[0]?.delta;
+                if (!delta) { continue; }
+                if (!sentStart) {
+                  sentStart = true;
+                  res.write(`data: ${JSON.stringify({ type: 'message_start', message: { id: chunk.id || 'msg_proxy', type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: inputTokens, output_tokens: 0 } } })}\n\n`);
+                  res.write(`data: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
+                  res.write(`data: ${JSON.stringify({ type: 'ping' })}\n\n`);
+                }
+                if (delta.content) {
+                  res.write(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: delta.content } })}\n\n`);
+                }
+              } catch { /* skip malformed chunk */ }
+            }
+          });
+          proxyRes.on('end', () => {
+            res.end();
+            this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+          });
+        } else if (convertResponse && !isStreaming) {
+          // Non-stream: buffer full response, convert to Anthropic format
+          let respBody = '';
+          proxyRes.on('data', (chunk: Buffer) => { respBody += chunk.toString(); });
+          proxyRes.on('end', () => {
+            try {
+              const oai = JSON.parse(respBody);
+              const text = oai.choices?.[0]?.message?.content || '';
+              const anthropicResp = {
+                id: oai.id || 'msg_proxy',
+                type: 'message',
+                role: 'assistant',
+                content: [{ type: 'text', text }],
+                model: oai.model || '',
+                stop_reason: oai.choices?.[0]?.finish_reason === 'stop' ? 'end_turn' : oai.choices?.[0]?.finish_reason,
+                stop_sequence: null,
+                usage: { input_tokens: oai.usage?.prompt_tokens || 0, output_tokens: oai.usage?.completion_tokens || 0 },
+              };
+              const out = JSON.stringify(anthropicResp);
+              res.writeHead(proxyRes.statusCode || 200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(out).toString() });
+              res.end(out);
+            } catch {
+              res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+              res.end(respBody);
+            }
+            this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+          });
+        } else {
+          res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+          proxyRes.pipe(res);
+          proxyRes.on('end', () => {
+            this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+          });
+        }
       }
     });
 
