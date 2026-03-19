@@ -131,9 +131,10 @@ export class ProxyServer extends EventEmitter {
     id: string
   ): void {
     const base = this.providerConfig.baseUrl.replace(/\/$/, '');
-    // Claude Code sends /v1/messages — strip leading /v1 to avoid duplication
-    // when base URL already contains /v1 (e.g. https://openrouter.ai/api/v1)
-    const reqPath = (req.url || '/').replace(/^\/v1/, '');
+    // Claude Code sends /v1/messages.
+    // Strip leading /v1 only when the base URL already ends with /v1 to avoid duplication.
+    const incomingPath = req.url || '/';
+    const reqPath = base.endsWith('/v1') ? incomingPath.replace(/^\/v1/, '') : incomingPath;
     const url = new URL(base + reqPath);
     const isHttps = url.protocol === 'https:';
     const transport = isHttps ? https : http;
@@ -162,11 +163,11 @@ export class ProxyServer extends EventEmitter {
         let errBody = '';
         proxyRes.on('data', chunk => { errBody += chunk; });
         proxyRes.on('end', () => {
-          let errMsg = `HTTP ${proxyRes.statusCode}`;
+          let errMsg = `HTTP ${proxyRes.statusCode} → ${url.toString()}`;
           try {
             const parsed = JSON.parse(errBody);
             errMsg = parsed?.error?.message || parsed?.message || errMsg;
-          } catch { /* use status code */ }
+          } catch { /* use status code + url */ }
           res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
           res.end(errBody);
           this.emitUpdate(id, { status: 'error', error: errMsg, endTime: Date.now() });
