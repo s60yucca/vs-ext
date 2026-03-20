@@ -6,11 +6,14 @@ import { ConfigPanel } from './configPanel';
 import { StatusBar } from './statusBar';
 import { RequestEvent } from './types';
 
+let activeProxy: ProxyServer | undefined;
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const store = new ConfigStore(context);
   const proxy = new ProxyServer();
+  activeProxy = proxy;
   const trafficPanel = new TrafficPanel();
-  const configPanel = new ConfigPanel(store);
+  const configPanel = new ConfigPanel(store, context.extensionUri);
   const statusBar = new StatusBar();
 
   // Register webview providers
@@ -103,6 +106,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 function configureClaudeCode(port: number): void {
   const url = `http://127.0.0.1:${port}`;
   const terminalEnv = vscode.workspace.getConfiguration('terminal.integrated.env');
+  const envConfig = vscode.workspace.getConfiguration();
+  const claudeCodeConfig = vscode.workspace.getConfiguration('claudeCode');
   const platform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'osx' : 'linux';
   const current = terminalEnv.get<Record<string, string>>(platform, {});
   terminalEnv.update(platform, {
@@ -111,8 +116,33 @@ function configureClaudeCode(port: number): void {
     ANTHROPIC_API_KEY: current['ANTHROPIC_API_KEY'] || 'dummy',
     ANTHROPIC_AUTH_TOKEN: '',   // clear conflicting token
   }, vscode.ConfigurationTarget.Workspace);
+
+  const currentEnv = envConfig.get<Record<string, string>>('env', {});
+  envConfig.update('env', {
+    ...currentEnv,
+    ANTHROPIC_BASE_URL: url,
+    ANTHROPIC_API_KEY: currentEnv['ANTHROPIC_API_KEY'] || 'dummy',
+    ANTHROPIC_AUTH_TOKEN: '',
+  }, vscode.ConfigurationTarget.Workspace);
+
+  const currentClaudeVars = claudeCodeConfig.get<Array<{ name: string; value: string }>>('environmentVariables', []);
+  const mergedClaudeVars = upsertEnvironmentVariable(currentClaudeVars, 'ANTHROPIC_BASE_URL', url);
+  const withApiKey = upsertEnvironmentVariable(mergedClaudeVars, 'ANTHROPIC_API_KEY', currentEnv['ANTHROPIC_API_KEY'] || 'dummy');
+  const finalClaudeVars = upsertEnvironmentVariable(withApiKey, 'ANTHROPIC_AUTH_TOKEN', '');
+  claudeCodeConfig.update('environmentVariables', finalClaudeVars, vscode.ConfigurationTarget.Workspace);
+}
+
+function upsertEnvironmentVariable(
+  vars: Array<{ name: string; value: string }>,
+  name: string,
+  value: string
+): Array<{ name: string; value: string }> {
+  const filtered = vars.filter(entry => entry.name !== name);
+  filtered.push({ name, value });
+  return filtered;
 }
 
 export async function deactivate(): Promise<void> {
-  // Disposables in context.subscriptions are cleaned up automatically by VS Code
+  await activeProxy?.stop();
+  activeProxy = undefined;
 }

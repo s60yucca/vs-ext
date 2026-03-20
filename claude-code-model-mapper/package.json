@@ -1,6 +1,6 @@
 {
   "name": "claude-code-model-mapper",
-  "displayName": "Claude Code Model Mapper",
+  "displayName": "Claude Code Model Mapper DEV",
   "description": "Map Claude Code models to alternative LLM providers via a local proxy server",
   "version": "0.1.0",
   "publisher": "kiro",
@@ -96,7 +96,7 @@
       "activitybar": [
         {
           "id": "claudeCodeModelMapper",
-          "title": "Claude Code Model Mapper",
+          "title": "CCMM DEV",
           "icon": "images/icon.svg"
         }
       ]
@@ -120,7 +120,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "node --test out/test/**/*.test.js"
+    "test": "node --test out/test/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

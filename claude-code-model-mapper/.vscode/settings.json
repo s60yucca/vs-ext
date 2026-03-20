@@ -1,0 +1,46 @@
+{
+    "terminal.integrated.env.osx": {
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:3456",
+        "ANTHROPIC_API_KEY": "dummy",
+        "ANTHROPIC_AUTH_TOKEN": ""
+    },
+    "env": {
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:3457",
+        "ANTHROPIC_API_KEY": "dummy",
+        "ANTHROPIC_AUTH_TOKEN": ""
+    },
+    "claudeCode.environmentVariables": [
+        {
+            "name": "ANTHROPIC_BASE_URL",
+            "value": "http://127.0.0.1:3456"
+        },
+        {
+            "name": "ANTHROPIC_API_KEY",
+            "value": "dummy"
+        },
+        {
+            "name": "ANTHROPIC_AUTH_TOKEN",
+            "value": ""
+        }
+    ],
+    "claudeCodeModelMapper.lmProvider": {
+        "baseUrl": "https://api.openadapter.in/v1"
+    },
+    "claudeCodeModelMapper.modelConfigs": [
+        {
+            "sourceModel": "claude-haiku",
+            "targetModel": "minimax/MiniMax-M2.7",
+            "enabled": true
+        },
+        {
+            "sourceModel": "claude-sonnet",
+            "targetModel": "DeepSeek-V3",
+            "enabled": true
+        },
+        {
+            "sourceModel": "claude-opus",
+            "targetModel": "GLM-5",
+            "enabled": true
+        }
+    ]
+}

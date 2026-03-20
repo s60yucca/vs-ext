@@ -37,6 +37,7 @@ export type ConfigPanelResponse = {
     hasApiKey: boolean;
 } | {
     type: 'saved';
+    scope: 'configs' | 'provider';
 } | {
     type: 'error';
     message: string;

@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Claude Code Model Mapper",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}/claude-code-model-mapper"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/claude-code-model-mapper/out/**/*.js"
+      ],
+      "preLaunchTask": "build claude-code-model-mapper"
+    }
+  ]
+}

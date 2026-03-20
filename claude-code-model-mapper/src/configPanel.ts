@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ConfigStore } from './configStore';
+import { DEFAULT_MODEL_CONFIGS } from './modelConfigDefaults';
 import { validateModelConfig, validateBaseUrl } from './validation';
 import { ConfigPanelMessage, ConfigPanelResponse, ModelConfig, LMProviderConfig } from './types';
 
@@ -7,32 +8,41 @@ export class ConfigPanel implements vscode.WebviewViewProvider {
   public static readonly viewId = 'claudeCodeModelMapper.configPanel';
 
   private view?: vscode.WebviewView;
-  private onConfigChangedCallback?: () => void;
+  private onConfigChangedCallback?: () => Promise<void> | void;
 
-  constructor(private readonly store: ConfigStore) {}
+  constructor(
+    private readonly store: ConfigStore,
+    private readonly extensionUri: vscode.Uri
+  ) {}
 
-  onConfigChanged(cb: () => void): void {
+  onConfigChanged(cb: () => Promise<void> | void): void {
     this.onConfigChangedCallback = cb;
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
     this.view = webviewView;
     webviewView.webview.options = { enableScripts: true };
-    webviewView.webview.html = getHtml();
+    webviewView.webview.html = getHtml(webviewView.webview, this.extensionUri);
 
     webviewView.webview.onDidReceiveMessage(async (msg: ConfigPanelMessage) => {
       if (msg.type === 'ready') {
         await this.sendInit();
       } else if (msg.type === 'saveConfigs') {
+        vscode.window.showInformationMessage(`Đang lưu ${msg.configs.length} mappings...`);
         await this.handleSaveConfigs(msg.configs);
       } else if (msg.type === 'saveLMProvider') {
+        vscode.window.showInformationMessage(`Đang lưu provider: ${msg.config.baseUrl}`);
         await this.handleSaveLMProvider(msg.config, msg.apiKey);
       }
     });
   }
 
   private async sendInit(): Promise<void> {
-    const configs = this.store.getModelConfigs();
+    let configs = this.store.getModelConfigs();
+    if (configs.length === 0) {
+      configs = DEFAULT_MODEL_CONFIGS;
+      await this.store.setModelConfigs(configs);
+    }
     const lmProvider = this.store.getLMProviderConfig();
     const apiKey = await this.store.getApiKey();
     this.post({ type: 'init', configs, lmProvider, hasApiKey: !!apiKey });
@@ -49,9 +59,17 @@ export class ConfigPanel implements vscode.WebviewViewProvider {
     // Enforce uniqueness: last entry wins for duplicate sourceModel
     const unique = new Map<string, ModelConfig>();
     for (const c of configs) { unique.set(c.sourceModel, c); }
-    await this.store.setModelConfigs([...unique.values()]);
-    this.post({ type: 'saved' });
-    this.onConfigChangedCallback?.();
+    try {
+      await this.store.setModelConfigs([...unique.values()]);
+      await this.onConfigChangedCallback?.();
+      vscode.window.showInformationMessage(`Đã lưu ${unique.size} mappings.`);
+      this.post({ type: 'saved', scope: 'configs' });
+      await this.sendInit();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Không lưu được mappings: ${message}`);
+      this.post({ type: 'error', message: `Không lưu được mappings: ${message}` });
+    }
   }
 
   private async handleSaveLMProvider(config: LMProviderConfig, apiKey?: string): Promise<void> {
@@ -60,13 +78,21 @@ export class ConfigPanel implements vscode.WebviewViewProvider {
       this.post({ type: 'error', message: urlResult.error! });
       return;
     }
-    await this.store.setLMProviderConfig(config);
-    // Only update key if user typed a new non-empty value
-    if (apiKey !== undefined && apiKey.trim() !== '') {
-      await this.store.setApiKey(apiKey.trim());
+    try {
+      await this.store.setLMProviderConfig(config);
+      // Only update key if user typed a new non-empty value
+      if (apiKey !== undefined && apiKey.trim() !== '') {
+        await this.store.setApiKey(apiKey.trim());
+      }
+      await this.onConfigChangedCallback?.();
+      vscode.window.showInformationMessage(`Đã lưu provider: ${config.baseUrl}`);
+      this.post({ type: 'saved', scope: 'provider' });
+      await this.sendInit();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Không lưu được provider: ${message}`);
+      this.post({ type: 'error', message: `Không lưu được provider: ${message}` });
     }
-    this.post({ type: 'saved' });
-    this.onConfigChangedCallback?.();
   }
 
   private post(msg: ConfigPanelResponse): void {
@@ -74,7 +100,8 @@ export class ConfigPanel implements vscode.WebviewViewProvider {
   }
 }
 
-function getHtml(): string {
+function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
+  const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'configPanel.js'));
   return `<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -82,6 +109,7 @@ function getHtml(): string {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-panel-background); margin: 0; padding: 8px; }
+  .dev-banner { margin-bottom: 10px; padding: 6px 8px; border: 1px solid var(--vscode-focusBorder); border-radius: 4px; font-size: 11px; color: var(--vscode-editor-foreground); background: color-mix(in srgb, var(--vscode-button-background) 18%, transparent); }
   h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; margin: 12px 0 6px; }
   input { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, #555); padding: 4px 6px; width: 100%; box-sizing: border-box; font-size: 12px; border-radius: 2px; }
   input:focus { outline: 1px solid var(--vscode-focusBorder); }
@@ -97,16 +125,19 @@ function getHtml(): string {
   .add-row input { flex: 1; }
   .section { margin-bottom: 16px; }
   .provider-grid { display: grid; gap: 4px; }
+  select { background: var(--vscode-dropdown-background, var(--vscode-input-background)); color: var(--vscode-dropdown-foreground, var(--vscode-input-foreground)); border: 1px solid var(--vscode-dropdown-border, var(--vscode-input-border, #555)); padding: 4px 6px; width: 100%; box-sizing: border-box; font-size: 12px; border-radius: 2px; }
+  .hint { font-size: 11px; opacity: 0.7; margin-top: 4px; }
   label { font-size: 11px; opacity: 0.7; display: block; margin-bottom: 2px; }
 </style>
 </head>
 <body>
+<div class="dev-banner" id="devBanner">DEV BUILD 2026-03-20 · local workspace build</div>
 <div class="section">
   <h3>Model Mappings</h3>
   <div id="mappings"></div>
   <div class="add-row">
     <input id="newSource" placeholder="claude-haiku" title="Source model">
-    <input id="newTarget" placeholder="minimax/minimax-m2.5" title="Target model">
+    <input id="newTarget" placeholder="minimax/minimax-m2.7" title="Target model">
     <button id="addBtn">+</button>
   </div>
   <div id="mapMsg"></div>
@@ -116,82 +147,22 @@ function getHtml(): string {
 <div class="section">
   <h3>LM Provider</h3>
   <div class="provider-grid">
+    <div>
+      <label>Preset</label>
+      <select id="providerPreset">
+        <option value="openrouter">OpenRouter</option>
+        <option value="openadapter">OpenAdapter</option>
+        <option value="custom">Custom</option>
+      </select>
+    </div>
     <div><label>Base URL</label><input id="baseUrl" placeholder="https://openrouter.ai/api/v1"></div>
     <div><label>API Key</label><input id="apiKey" type="password" placeholder="sk-..."></div>
   </div>
+  <div class="hint">OpenAdapter preset uses <code>https://api.openadapter.in</code> and works with OpenAI-compatible models such as <code>minimax/minimax-m2.7</code>.</div>
   <div id="provMsg"></div>
   <button id="saveProvBtn" style="margin-top:8px">Lưu provider</button>
 </div>
-
-<script>
-  const vscode = acquireVsCodeApi();
-  let configs = [];
-
-  function renderMappings() {
-    const el = document.getElementById('mappings');
-    if (configs.length === 0) { el.innerHTML = '<div style="opacity:0.4;font-size:11px">Chưa có mapping nào.</div>'; return; }
-    el.innerHTML = configs.map((c, i) => \`
-      <div class="row">
-        <input value="\${esc(c.sourceModel)}" data-i="\${i}" data-f="sourceModel" onchange="update(this)">
-        <input value="\${esc(c.targetModel)}" data-i="\${i}" data-f="targetModel" onchange="update(this)">
-        <input type="checkbox" class="toggle" \${c.enabled ? 'checked' : ''} title="Bật/tắt" data-i="\${i}" onchange="toggle(this)">
-        <button class="secondary" onclick="remove(\${i})">✕</button>
-      </div>\`).join('');
-  }
-
-  function esc(s) { return (s||'').replace(/"/g,'&quot;'); }
-  function update(el) { configs[+el.dataset.i][el.dataset.f] = el.value; }
-  function toggle(el) { configs[+el.dataset.i].enabled = el.checked; }
-  function remove(i) { configs.splice(i, 1); renderMappings(); }
-
-  document.getElementById('addBtn').addEventListener('click', () => {
-    const src = document.getElementById('newSource').value.trim();
-    const tgt = document.getElementById('newTarget').value.trim();
-    if (!src || !tgt) { showMsg('mapMsg', 'Vui lòng nhập đủ source và target.', true); return; }
-    configs.push({ sourceModel: src, targetModel: tgt, enabled: true });
-    document.getElementById('newSource').value = '';
-    document.getElementById('newTarget').value = '';
-    renderMappings();
-  });
-
-  document.getElementById('saveMapBtn').addEventListener('click', () => {
-    vscode.postMessage({ type: 'saveConfigs', configs });
-  });
-
-  document.getElementById('saveProvBtn').addEventListener('click', () => {
-    const baseUrl = document.getElementById('baseUrl').value.trim();
-    const apiKey = document.getElementById('apiKey').value;
-    vscode.postMessage({ type: 'saveLMProvider', config: { baseUrl }, apiKey });
-  });
-
-  function showMsg(id, msg, isError) {
-    const el = document.getElementById(id);
-    el.className = isError ? 'error' : 'success';
-    el.textContent = msg;
-    setTimeout(() => { el.textContent = ''; }, 3000);
-  }
-
-  window.addEventListener('message', e => {
-    const msg = e.data;
-    if (msg.type === 'init') {
-      configs = msg.configs || [];
-      renderMappings();
-      if (msg.lmProvider) document.getElementById('baseUrl').value = msg.lmProvider.baseUrl || '';
-      if (msg.hasApiKey) {
-        const keyInput = document.getElementById('apiKey');
-        keyInput.placeholder = '••••••••  (saved — leave blank to keep)';
-      }
-    } else if (msg.type === 'saved') {
-      showMsg('mapMsg', 'Đã lưu.', false);
-      showMsg('provMsg', 'Đã lưu.', false);
-    } else if (msg.type === 'error') {
-      showMsg('mapMsg', msg.message, true);
-      showMsg('provMsg', msg.message, true);
-    }
-  });
-
-  vscode.postMessage({ type: 'ready' });
-</script>
+<script src="${scriptUri}"></script>
 </body>
 </html>`;
 }

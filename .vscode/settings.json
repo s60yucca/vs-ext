@@ -1,0 +1,7 @@
+{
+    "terminal.integrated.env.osx": {
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:3456",
+        "ANTHROPIC_API_KEY": "dummy",
+        "ANTHROPIC_AUTH_TOKEN": ""
+    }
+}

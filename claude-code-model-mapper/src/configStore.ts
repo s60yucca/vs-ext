@@ -1,27 +1,25 @@
 import * as vscode from 'vscode';
 import { ModelConfig, LMProviderConfig, ProxyServerOptions } from './types';
+import { DEFAULT_MODEL_CONFIGS, mergeModelConfigs } from './modelConfigDefaults';
 
 const SECRET_KEY = 'claudeCodeModelMapper.apiKey';
 const CFG = 'claudeCodeModelMapper';
-
-export const DEFAULT_MODEL_CONFIGS: ModelConfig[] = [
-  { sourceModel: 'claude-haiku',  targetModel: 'minimax/minimax-m2.5',                    enabled: true },
-  { sourceModel: 'claude-sonnet', targetModel: 'meta-llama/llama-3.3-70b-instruct',       enabled: true },
-  { sourceModel: 'claude-opus',   targetModel: 'nvidia/llama-3.1-nemotron-ultra-253b',    enabled: true },
-];
 
 export class ConfigStore {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   getModelConfigs(): ModelConfig[] {
     const raw = vscode.workspace.getConfiguration(CFG).get<ModelConfig[]>('modelConfigs', []);
-    return raw.length > 0 ? raw : DEFAULT_MODEL_CONFIGS;
+    return mergeModelConfigs(raw);
   }
 
   async setModelConfigs(configs: ModelConfig[]): Promise<void> {
-    await vscode.workspace.getConfiguration(CFG).update(
-      'modelConfigs', configs, vscode.ConfigurationTarget.Global
-    );
+    const configuration = vscode.workspace.getConfiguration(CFG);
+    const target = this.getConfigurationTarget();
+    await configuration.update('modelConfigs', configs, target);
+    if (target === vscode.ConfigurationTarget.Workspace) {
+      await configuration.update('modelConfigs', configs, vscode.ConfigurationTarget.Global);
+    }
   }
 
   getLMProviderConfig(): LMProviderConfig {
@@ -31,9 +29,12 @@ export class ConfigStore {
   }
 
   async setLMProviderConfig(config: LMProviderConfig): Promise<void> {
-    await vscode.workspace.getConfiguration(CFG).update(
-      'lmProvider', config, vscode.ConfigurationTarget.Global
-    );
+    const configuration = vscode.workspace.getConfiguration(CFG);
+    const target = this.getConfigurationTarget();
+    await configuration.update('lmProvider', config, target);
+    if (target === vscode.ConfigurationTarget.Workspace) {
+      await configuration.update('lmProvider', config, vscode.ConfigurationTarget.Global);
+    }
   }
 
   async getApiKey(): Promise<string | undefined> {
@@ -58,5 +59,11 @@ export class ConfigStore {
         handler();
       }
     });
+  }
+
+  private getConfigurationTarget(): vscode.ConfigurationTarget {
+    return vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
   }
 }

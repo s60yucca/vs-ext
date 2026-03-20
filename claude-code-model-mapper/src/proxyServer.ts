@@ -1,5 +1,6 @@
 import * as http from 'http';
 import * as https from 'https';
+import * as zlib from 'zlib';
 import { EventEmitter } from 'events';
 import { ModelConfig, LMProviderConfig, ProxyServerOptions, RequestEvent, RequestStatus } from './types';
 import { resolve as resolveModel } from './modelMapper';
@@ -143,10 +144,7 @@ export class ProxyServer extends EventEmitter {
     res: http.ServerResponse,
     id: string
   ): void {
-    const base = this.providerConfig.baseUrl.replace(/\/$/, '');
-    const incomingPath = rewrittenUrl;
-    const reqPath = base.endsWith('/v1') ? incomingPath.replace(/^\/v1/, '') : incomingPath;
-    const url = new URL(base + reqPath);
+    const url = buildUpstreamUrl(this.providerConfig.baseUrl, rewrittenUrl);
     const isHttps = url.protocol === 'https:';
     const transport = isHttps ? https : http;
 
@@ -157,6 +155,9 @@ export class ProxyServer extends EventEmitter {
     }
     if (this.apiKey) {
       headers['authorization'] = `Bearer ${this.apiKey}`;
+    }
+    if (convertResponse) {
+      headers['accept-encoding'] = 'identity';
     }
     headers['content-length'] = Buffer.byteLength(body).toString();
 
@@ -170,11 +171,12 @@ export class ProxyServer extends EventEmitter {
     };
 
     const proxyReq = transport.request(options, proxyRes => {
+      const upstream = getDecodedResponseStream(proxyRes);
       const isError = (proxyRes.statusCode || 200) >= 400;
       if (isError) {
         let errBody = '';
-        proxyRes.on('data', chunk => { errBody += chunk; });
-        proxyRes.on('end', () => {
+        upstream.on('data', chunk => { errBody += chunk.toString(); });
+        upstream.on('end', () => {
           let errMsg = `HTTP ${proxyRes.statusCode} → ${url.toString()}`;
           try {
             const parsed = JSON.parse(errBody);
@@ -192,8 +194,12 @@ export class ProxyServer extends EventEmitter {
           let inputTokens = 0;
           let outputTokens = 0;
           let sentStart = false;
+          const sanitizer = new StreamingTextSanitizer();
+          const toolStates = new Map<number, { id: string; name: string; started: boolean }>();
+          let textBlockStarted = false;
+          let finishReason: string | null = null;
           const model = body ? (JSON.parse(body)['model'] as string) || '' : '';
-          proxyRes.on('data', (chunk: Buffer) => {
+          upstream.on('data', (chunk: Buffer | string) => {
             buffer += chunk.toString();
             const lines = buffer.split('\n');
             buffer = lines.pop() || '';
@@ -201,9 +207,13 @@ export class ProxyServer extends EventEmitter {
               if (!line.startsWith('data: ')) { continue; }
               const data = line.slice(6).trim();
               if (data === '[DONE]') {
-                // send final delta stop + message_delta + message_stop
-                res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
-                res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
+                if (textBlockStarted) {
+                  res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+                }
+                for (const [toolIndex] of toolStates) {
+                  res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: getToolBlockIndex(toolIndex, textBlockStarted) })}\n\n`);
+                }
+                res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: mapFinishReason(finishReason), stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
                 res.write(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
                 return;
               }
@@ -213,39 +223,76 @@ export class ProxyServer extends EventEmitter {
                   inputTokens = chunk.usage.prompt_tokens || 0;
                   outputTokens = chunk.usage.completion_tokens || 0;
                 }
-                const delta = chunk.choices?.[0]?.delta;
+                const choice = chunk.choices?.[0];
+                if (choice?.finish_reason) {
+                  finishReason = choice.finish_reason;
+                }
+                const delta = choice?.delta;
                 if (!delta) { continue; }
                 if (!sentStart) {
                   sentStart = true;
                   res.write(`data: ${JSON.stringify({ type: 'message_start', message: { id: chunk.id || 'msg_proxy', type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: inputTokens, output_tokens: 0 } } })}\n\n`);
-                  res.write(`data: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
                   res.write(`data: ${JSON.stringify({ type: 'ping' })}\n\n`);
                 }
-                if (delta.content) {
-                  res.write(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: delta.content } })}\n\n`);
+                const text = sanitizer.push(extractDeltaText(delta));
+                if (text) {
+                  if (!textBlockStarted) {
+                    textBlockStarted = true;
+                    res.write(`data: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
+                  }
+                  res.write(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })}\n\n`);
+                }
+                for (const toolCall of extractDeltaToolCalls(delta)) {
+                  const existing = toolStates.get(toolCall.index) || {
+                    id: toolCall.id || `toolu_${toolCall.index}`,
+                    name: toolCall.name || '',
+                    started: false,
+                  };
+                  if (toolCall.id) existing.id = toolCall.id;
+                  if (toolCall.name) existing.name = toolCall.name;
+                  if (!existing.started && existing.name) {
+                    existing.started = true;
+                    res.write(`data: ${JSON.stringify({
+                      type: 'content_block_start',
+                      index: getToolBlockIndex(toolCall.index, textBlockStarted),
+                      content_block: { type: 'tool_use', id: existing.id, name: existing.name, input: {} },
+                    })}\n\n`);
+                  }
+                  if (existing.started && toolCall.argumentsChunk) {
+                    res.write(`data: ${JSON.stringify({
+                      type: 'content_block_delta',
+                      index: getToolBlockIndex(toolCall.index, textBlockStarted),
+                      delta: { type: 'input_json_delta', partial_json: toolCall.argumentsChunk },
+                    })}\n\n`);
+                  }
+                  toolStates.set(toolCall.index, existing);
                 }
               } catch { /* skip malformed chunk */ }
             }
           });
-          proxyRes.on('end', () => {
+          upstream.on('end', () => {
             res.end();
             this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
           });
         } else if (convertResponse && !isStreaming) {
           // Non-stream: buffer full response, convert to Anthropic format
           let respBody = '';
-          proxyRes.on('data', (chunk: Buffer) => { respBody += chunk.toString(); });
-          proxyRes.on('end', () => {
+          upstream.on('data', (chunk: Buffer | string) => { respBody += chunk.toString(); });
+          upstream.on('end', () => {
             try {
               const oai = JSON.parse(respBody);
-              const text = oai.choices?.[0]?.message?.content || '';
+              const text = sanitizeVisibleText(extractTextContent(oai.choices?.[0]?.message?.content));
+              const toolUses = convertToolCallsToAnthropic(oai.choices?.[0]?.message?.tool_calls);
               const anthropicResp = {
                 id: oai.id || 'msg_proxy',
                 type: 'message',
                 role: 'assistant',
-                content: [{ type: 'text', text }],
+                content: [
+                  ...(text ? [{ type: 'text', text }] : []),
+                  ...toolUses,
+                ],
                 model: oai.model || '',
-                stop_reason: oai.choices?.[0]?.finish_reason === 'stop' ? 'end_turn' : oai.choices?.[0]?.finish_reason,
+                stop_reason: mapFinishReason(oai.choices?.[0]?.finish_reason),
                 stop_sequence: null,
                 usage: { input_tokens: oai.usage?.prompt_tokens || 0, output_tokens: oai.usage?.completion_tokens || 0 },
               };
@@ -289,9 +336,203 @@ export class ProxyServer extends EventEmitter {
   }
 }
 
+function getDecodedResponseStream(proxyRes: http.IncomingMessage): NodeJS.ReadableStream {
+  const encoding = String(proxyRes.headers['content-encoding'] || '').toLowerCase();
+  if (encoding.includes('gzip')) {
+    return proxyRes.pipe(zlib.createGunzip());
+  }
+  if (encoding.includes('br')) {
+    return proxyRes.pipe(zlib.createBrotliDecompress());
+  }
+  if (encoding.includes('deflate')) {
+    return proxyRes.pipe(zlib.createInflate());
+  }
+  return proxyRes;
+}
+
+export function buildUpstreamUrl(baseUrl: string, rewrittenUrl: string): URL {
+  const base = baseUrl.replace(/\/$/, '');
+  const incomingPath = rewrittenUrl || '/';
+  const reqPath = base.endsWith('/v1') ? incomingPath.replace(/^\/v1/, '') : incomingPath;
+  return new URL(base + reqPath);
+}
+
+export function extractTextContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map(part => {
+        if (typeof part === 'string') {
+          return part;
+        }
+        if (part && typeof part === 'object') {
+          const typedPart = part as { type?: unknown; text?: unknown };
+          if (typedPart.type === 'text' && typeof typedPart.text === 'string') {
+            return typedPart.text;
+          }
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+export function extractDeltaText(delta: unknown): string {
+  if (!delta || typeof delta !== 'object') {
+    return '';
+  }
+
+  const typedDelta = delta as { content?: unknown };
+  return extractTextContent(typedDelta.content);
+}
+
+export function sanitizeVisibleText(text: string): string {
+  return new StreamingTextSanitizer().push(text, true).trim();
+}
+
+type DeltaToolCall = { index: number; id?: string; name?: string; argumentsChunk?: string };
+
+class StreamingTextSanitizer {
+  private pending = '';
+  private hiddenTag: string | null = null;
+
+  push(input: string, flush = false): string {
+    if (!input && !flush) {
+      return '';
+    }
+
+    this.pending += input;
+    let output = '';
+
+    while (this.pending.length > 0) {
+      if (this.hiddenTag) {
+        const closeTag = `</${this.hiddenTag}>`;
+        const closeIndex = this.pending.indexOf(closeTag);
+        if (closeIndex === -1) {
+          if (flush) {
+            this.pending = '';
+            this.hiddenTag = null;
+          }
+          break;
+        }
+        this.pending = this.pending.slice(closeIndex + closeTag.length);
+        this.hiddenTag = null;
+        continue;
+      }
+
+      const openMatch = this.pending.match(/<(think|fast_path|tool_call)>/);
+      if (!openMatch || openMatch.index === undefined) {
+        output += stripStandaloneTags(flush ? this.pending : safeVisiblePrefix(this.pending));
+        this.pending = flush ? '' : this.pending.slice(safeVisiblePrefix(this.pending).length);
+        break;
+      }
+
+      const openIndex = openMatch.index;
+      const visible = this.pending.slice(0, openIndex);
+      output += stripStandaloneTags(visible);
+      this.pending = this.pending.slice(openIndex + openMatch[0].length);
+      this.hiddenTag = openMatch[1];
+    }
+
+    return output;
+  }
+}
+
+function safeVisiblePrefix(text: string): string {
+  const lastOpen = text.lastIndexOf('<');
+  const lastClose = text.lastIndexOf('>');
+  if (lastOpen > lastClose) {
+    return text.slice(0, lastOpen);
+  }
+  return text;
+}
+
+function stripStandaloneTags(text: string): string {
+  return text.replace(/<\/?(think|fast_path|tool_call)>/g, '');
+}
+
+function extractDeltaToolCalls(delta: unknown): DeltaToolCall[] {
+  if (!delta || typeof delta !== 'object') {
+    return [];
+  }
+
+  const toolCalls = (delta as { tool_calls?: unknown }).tool_calls;
+  if (!Array.isArray(toolCalls)) {
+    return [];
+  }
+
+  const result: DeltaToolCall[] = [];
+  for (const [fallbackIndex, toolCall] of toolCalls.entries()) {
+    if (!toolCall || typeof toolCall !== 'object') {
+      continue;
+    }
+    const typed = toolCall as {
+      index?: unknown;
+      id?: unknown;
+      function?: { name?: unknown; arguments?: unknown };
+    };
+    result.push({
+      index: typeof typed.index === 'number' ? typed.index : fallbackIndex,
+      id: typeof typed.id === 'string' ? typed.id : undefined,
+      name: typeof typed.function?.name === 'string' ? typed.function.name : undefined,
+      argumentsChunk: typeof typed.function?.arguments === 'string' ? typed.function.arguments : undefined,
+    });
+  }
+  return result;
+}
+
+function convertToolCallsToAnthropic(toolCalls: unknown): Array<{ type: 'tool_use'; id: string; name: string; input: unknown }> {
+  if (!Array.isArray(toolCalls)) {
+    return [];
+  }
+
+  return toolCalls.flatMap((toolCall, index) => {
+    if (!toolCall || typeof toolCall !== 'object') {
+      return [];
+    }
+    const typed = toolCall as {
+      id?: unknown;
+      function?: { name?: unknown; arguments?: unknown };
+    };
+    const name = typeof typed.function?.name === 'string' ? typed.function.name : '';
+    const rawArguments = typeof typed.function?.arguments === 'string' ? typed.function.arguments : '{}';
+    let input: unknown = {};
+    try {
+      input = JSON.parse(rawArguments);
+    } catch {
+      input = {};
+    }
+
+    return [{
+      type: 'tool_use' as const,
+      id: typeof typed.id === 'string' ? typed.id : `toolu_${index}`,
+      name,
+      input,
+    }];
+  });
+}
+
+function mapFinishReason(reason: unknown): string | null {
+  if (reason === 'stop') {
+    return 'end_turn';
+  }
+  if (reason === 'tool_calls') {
+    return 'tool_use';
+  }
+  return typeof reason === 'string' ? reason : null;
+}
+
+function getToolBlockIndex(toolIndex: number, hasTextBlock: boolean): number {
+  return hasTextBlock ? toolIndex + 1 : toolIndex;
+}
+
 // Convert Anthropic Messages API body → OpenAI Chat Completions body
-function anthropicToOpenAI(body: Record<string, unknown>): Record<string, unknown> {
-  const messages: Array<{ role: string; content: unknown }> = [];
+export function anthropicToOpenAI(body: Record<string, unknown>): Record<string, unknown> {
+  const messages: Array<Record<string, unknown>> = [];
 
   // system prompt → system message
   if (body['system']) {
@@ -308,11 +549,43 @@ function anthropicToOpenAI(body: Record<string, unknown>): Record<string, unknow
     if (typeof content === 'string') {
       messages.push({ role: msg.role, content });
     } else if (Array.isArray(content)) {
-      // Flatten content blocks to a single string for simplicity
-      const text = (content as Array<{ type: string; text?: string }>)
+      const blocks = content as Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: string }>;
+      const text = blocks
         .filter(b => b.type === 'text')
         .map(b => b.text || '')
         .join('\n');
+
+      if (msg.role === 'assistant') {
+        const toolCalls = blocks
+          .filter(b => b.type === 'tool_use')
+          .map((block, index) => ({
+            id: block.id || `toolu_${index}`,
+            type: 'function',
+            function: {
+              name: block.name || '',
+              arguments: JSON.stringify(block.input ?? {}),
+            },
+          }));
+
+        if (text || toolCalls.length > 0) {
+          messages.push({ role: 'assistant', content: text || '', tool_calls: toolCalls.length > 0 ? toolCalls : undefined });
+        }
+        continue;
+      }
+
+      if (msg.role === 'user') {
+        const textBlocks = text ? [{ role: 'user', content: text }] : [];
+        const toolResults = blocks
+          .filter(b => b.type === 'tool_result')
+          .map(block => ({
+            role: 'tool',
+            tool_call_id: block.tool_use_id || '',
+            content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? ''),
+          }));
+        messages.push(...textBlocks, ...toolResults);
+        continue;
+      }
+
       messages.push({ role: msg.role, content: text });
     } else {
       messages.push({ role: msg.role, content: String(content) });
@@ -329,6 +602,26 @@ function anthropicToOpenAI(body: Record<string, unknown>): Record<string, unknow
   if (body['temperature'] !== undefined) { result['temperature'] = body['temperature']; }
   if (body['top_p'] !== undefined) { result['top_p'] = body['top_p']; }
   if (body['stop_sequences']) { result['stop'] = body['stop_sequences']; }
+  if (Array.isArray(body['tools'])) {
+    result['tools'] = (body['tools'] as Array<{ name?: string; description?: string; input_schema?: unknown }>).map(tool => ({
+      type: 'function',
+      function: {
+        name: tool.name || '',
+        description: tool.description || '',
+        parameters: tool.input_schema ?? { type: 'object', properties: {} },
+      },
+    }));
+  }
+  if (body['tool_choice'] && typeof body['tool_choice'] === 'object') {
+    const toolChoice = body['tool_choice'] as { type?: string; name?: string };
+    if (toolChoice.type === 'auto') {
+      result['tool_choice'] = 'auto';
+    } else if (toolChoice.type === 'any') {
+      result['tool_choice'] = 'required';
+    } else if (toolChoice.type === 'tool' && toolChoice.name) {
+      result['tool_choice'] = { type: 'function', function: { name: toolChoice.name } };
+    }
+  }
 
   return result;
 }

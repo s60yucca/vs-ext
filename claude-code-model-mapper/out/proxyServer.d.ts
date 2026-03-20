@@ -20,4 +20,9 @@ export declare class ProxyServer extends EventEmitter {
     private forwardRequest;
     private emitUpdate;
 }
+export declare function buildUpstreamUrl(baseUrl: string, rewrittenUrl: string): URL;
+export declare function extractTextContent(content: unknown): string;
+export declare function extractDeltaText(delta: unknown): string;
+export declare function sanitizeVisibleText(text: string): string;
+export declare function anthropicToOpenAI(body: Record<string, unknown>): Record<string, unknown>;
 //# sourceMappingURL=proxyServer.d.ts.map
