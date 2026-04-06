@@ -8,6 +8,7 @@ export interface ModelConfig {
 
 export interface LMProviderConfig {
   baseUrl: string; // e.g. "https://openrouter.ai/api/v1"
+  nativeAnthropic?: boolean; // Set to true if the provider supports native Anthropic Messages API
 }
 
 export interface ProxyServerOptions {

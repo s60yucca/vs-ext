@@ -3,7 +3,8 @@
   "displayName": "Claude Code Model Mapper DEV",
   "description": "Map Claude Code models to alternative LLM providers via a local proxy server",
   "version": "0.1.0",
-  "publisher": "kiro",
+  "publisher": "thohoang",
+  "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -87,6 +88,11 @@
             "baseUrl": {
               "type": "string",
               "description": "Base URL của LM Provider"
+            },
+            "nativeAnthropic": {
+              "type": "boolean",
+              "default": false,
+              "description": "Bypass OpenAI format conversion. Set to true if the provider supports native Anthropic Messages API."
             }
           }
         }
@@ -125,6 +131,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.7.1",
     "fast-check": "^3.15.0",
     "typescript": "^5.9.3"
   }

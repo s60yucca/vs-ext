@@ -55,15 +55,14 @@ class ConfigStore {
         }
     }
     getLMProviderConfig() {
-        return vscode.workspace.getConfiguration(CFG).get('lmProvider', { baseUrl: 'https://openrouter.ai/api/v1' });
+        const config = vscode.workspace.getConfiguration(CFG).get('lmProvider', { baseUrl: 'https://openrouter.ai/api/v1' });
+        return {
+            baseUrl: config.baseUrl || 'https://openrouter.ai/api/v1',
+            nativeAnthropic: config.nativeAnthropic || false,
+        };
     }
     async setLMProviderConfig(config) {
-        const configuration = vscode.workspace.getConfiguration(CFG);
-        const target = this.getConfigurationTarget();
-        await configuration.update('lmProvider', config, target);
-        if (target === vscode.ConfigurationTarget.Workspace) {
-            await configuration.update('lmProvider', config, vscode.ConfigurationTarget.Global);
-        }
+        await vscode.workspace.getConfiguration(CFG).update('lmProvider', config, true);
     }
     async getApiKey() {
         return this.context.secrets.get(SECRET_KEY);

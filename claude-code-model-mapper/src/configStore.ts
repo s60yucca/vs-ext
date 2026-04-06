@@ -23,18 +23,17 @@ export class ConfigStore {
   }
 
   getLMProviderConfig(): LMProviderConfig {
-    return vscode.workspace.getConfiguration(CFG).get<LMProviderConfig>(
+    const config = vscode.workspace.getConfiguration(CFG).get<LMProviderConfig>(
       'lmProvider', { baseUrl: 'https://openrouter.ai/api/v1' }
     );
+    return {
+      baseUrl: config.baseUrl || 'https://openrouter.ai/api/v1',
+      nativeAnthropic: config.nativeAnthropic || false,
+    };
   }
 
   async setLMProviderConfig(config: LMProviderConfig): Promise<void> {
-    const configuration = vscode.workspace.getConfiguration(CFG);
-    const target = this.getConfigurationTarget();
-    await configuration.update('lmProvider', config, target);
-    if (target === vscode.ConfigurationTarget.Workspace) {
-      await configuration.update('lmProvider', config, vscode.ConfigurationTarget.Global);
-    }
+    await vscode.workspace.getConfiguration(CFG).update('lmProvider', config, true);
   }
 
   async getApiKey(): Promise<string | undefined> {

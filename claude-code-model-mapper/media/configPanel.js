@@ -96,7 +96,8 @@
     if (target.id === 'saveProvBtn') {
       const baseUrl = byId('baseUrl').value.trim();
       const apiKey = byId('apiKey').value;
-      vscode.postMessage({ type: 'saveLMProvider', config: { baseUrl: baseUrl }, apiKey: apiKey });
+      const nativeAnthropic = byId('nativeAnthropic') ? byId('nativeAnthropic').checked : false;
+      vscode.postMessage({ type: 'saveLMProvider', config: { baseUrl: baseUrl, nativeAnthropic: nativeAnthropic }, apiKey: apiKey });
       return;
     }
 
@@ -125,6 +126,9 @@
         const baseUrl = msg.lmProvider.baseUrl || '';
         byId('baseUrl').value = baseUrl;
         byId('providerPreset').value = detectPreset(baseUrl);
+        if (byId('nativeAnthropic')) {
+          byId('nativeAnthropic').checked = !!msg.lmProvider.nativeAnthropic;
+        }
         byId('devBanner').textContent = 'DEV BUILD 2026-03-20 · mappings=' + configs.length + ' · baseUrl=' + (baseUrl || '(empty)');
       }
       if (msg.hasApiKey) {

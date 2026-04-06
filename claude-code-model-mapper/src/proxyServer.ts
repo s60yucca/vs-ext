@@ -125,13 +125,15 @@ export class ProxyServer extends EventEmitter {
       let rewrittenBody: string;
       let rewrittenUrl = req.url || '/';
       const isStreaming = !!(parsed['stream']);
-      if (isMessagesEndpoint) {
+      const shouldConvert = isMessagesEndpoint && !this.providerConfig.nativeAnthropic;
+
+      if (shouldConvert) {
         parsed = anthropicToOpenAI(parsed);
         rewrittenUrl = rewrittenUrl.replace('/messages', '/chat/completions').replace(/\?.*$/, '');
       }
       rewrittenBody = JSON.stringify(parsed);
 
-      this.forwardRequest(req, rewrittenBody, rewrittenUrl, isMessagesEndpoint, isStreaming, res, id);
+      this.forwardRequest(req, rewrittenBody, rewrittenUrl, shouldConvert, isStreaming, res, id);
     });
   }
 
@@ -150,7 +152,8 @@ export class ProxyServer extends EventEmitter {
 
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
-      if (k.toLowerCase() === 'host') { continue; }
+      const lowerK = k.toLowerCase();
+      if (lowerK === 'host' || lowerK === 'x-api-key' || lowerK.startsWith('anthropic-')) { continue; }
       if (v) { headers[k] = Array.isArray(v) ? v.join(', ') : v; }
     }
     if (this.apiKey) {
@@ -549,7 +552,7 @@ export function anthropicToOpenAI(body: Record<string, unknown>): Record<string,
     if (typeof content === 'string') {
       messages.push({ role: msg.role, content });
     } else if (Array.isArray(content)) {
-      const blocks = content as Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: string }>;
+      const blocks = content as Array<{ type: string; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: string; source?: { type: string; media_type: string; data: string }; is_error?: boolean }>;
       const text = blocks
         .filter(b => b.type === 'text')
         .map(b => b.text || '')
@@ -568,21 +571,34 @@ export function anthropicToOpenAI(body: Record<string, unknown>): Record<string,
           }));
 
         if (text || toolCalls.length > 0) {
-          messages.push({ role: 'assistant', content: text || '', tool_calls: toolCalls.length > 0 ? toolCalls : undefined });
+          messages.push({ role: 'assistant', content: text || null, tool_calls: toolCalls.length > 0 ? toolCalls : undefined });
         }
         continue;
       }
 
       if (msg.role === 'user') {
-        const textBlocks = text ? [{ role: 'user', content: text }] : [];
+        const contentArray: any[] = [];
+        if (text) contentArray.push({ type: 'text', text });
+        const imageBlocks = blocks
+          .filter(b => b.type === 'image' && b.source)
+          .map(b => ({
+            type: 'image_url',
+            image_url: { url: `data:${b.source!.media_type};base64,${b.source!.data}` }
+          }));
+        contentArray.push(...imageBlocks);
+
+        const textBlocks = contentArray.length > 0 ? [{ role: 'user', content: contentArray.length === 1 && contentArray[0].type === 'text' ? text : contentArray }] : [];
         const toolResults = blocks
           .filter(b => b.type === 'tool_result')
-          .map(block => ({
-            role: 'tool',
-            tool_call_id: block.tool_use_id || '',
-            content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? ''),
-          }));
-        messages.push(...textBlocks, ...toolResults);
+          .map(block => {
+            const contentStr = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+            return {
+              role: 'tool',
+              tool_call_id: block.tool_use_id || '',
+              content: block.is_error ? `Error: ${contentStr}` : contentStr,
+            };
+          });
+        messages.push(...toolResults, ...textBlocks);
         continue;
       }
 
@@ -598,10 +614,15 @@ export function anthropicToOpenAI(body: Record<string, unknown>): Record<string,
     stream: body['stream'] ?? false,
   };
 
+  if (result.stream) {
+    result['stream_options'] = { include_usage: true };
+  }
+
   if (body['max_tokens']) { result['max_tokens'] = body['max_tokens']; }
   if (body['temperature'] !== undefined) { result['temperature'] = body['temperature']; }
   if (body['top_p'] !== undefined) { result['top_p'] = body['top_p']; }
-  if (body['stop_sequences']) { result['stop'] = body['stop_sequences']; }
+  if (body['top_k'] !== undefined) { result['top_k'] = body['top_k']; }
+  if (body['stop_sequences'] && Array.isArray(body['stop_sequences']) && body['stop_sequences'].length > 0) { result['stop'] = body['stop_sequences']; }
   if (Array.isArray(body['tools'])) {
     result['tools'] = (body['tools'] as Array<{ name?: string; description?: string; input_schema?: unknown }>).map(tool => ({
       type: 'function',
@@ -613,13 +634,16 @@ export function anthropicToOpenAI(body: Record<string, unknown>): Record<string,
     }));
   }
   if (body['tool_choice'] && typeof body['tool_choice'] === 'object') {
-    const toolChoice = body['tool_choice'] as { type?: string; name?: string };
+    const toolChoice = body['tool_choice'] as { type?: string; name?: string; disable_parallel_tool_use?: boolean };
     if (toolChoice.type === 'auto') {
       result['tool_choice'] = 'auto';
     } else if (toolChoice.type === 'any') {
       result['tool_choice'] = 'required';
     } else if (toolChoice.type === 'tool' && toolChoice.name) {
       result['tool_choice'] = { type: 'function', function: { name: toolChoice.name } };
+    }
+    if (toolChoice.disable_parallel_tool_use === true) {
+      result['parallel_tool_calls'] = false;
     }
   }
 

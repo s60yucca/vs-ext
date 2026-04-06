@@ -5,6 +5,7 @@ export interface ModelConfig {
 }
 export interface LMProviderConfig {
     baseUrl: string;
+    nativeAnthropic?: boolean;
 }
 export interface ProxyServerOptions {
     port: number;

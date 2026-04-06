@@ -157,6 +157,12 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
     </div>
     <div><label>Base URL</label><input id="baseUrl" placeholder="https://openrouter.ai/api/v1"></div>
     <div><label>API Key</label><input id="apiKey" type="password" placeholder="sk-..."></div>
+    <div style="margin-top: 8px;">
+      <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer;">
+        <input type="checkbox" id="nativeAnthropic" style="width: auto;">
+        Bypass OpenAI format (Provider supports Anthropic Native API)
+      </label>
+    </div>
   </div>
   <div class="hint">OpenAdapter preset uses <code>https://api.openadapter.in</code> and works with OpenAI-compatible models such as <code>minimax/minimax-m2.7</code>.</div>
   <div id="provMsg"></div>
