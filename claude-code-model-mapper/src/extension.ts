@@ -105,6 +105,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 function configureClaudeCode(port: number): void {
   const url = `http://127.0.0.1:${port}`;
+  // Dummy key must be exactly 108 characters (13 prefix + 95 alphanumeric/hyphens) to pass Claude Code's regex validation
+  const dummyKey = 'sk-ant-api03-dummykey000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
+
   const terminalEnv = vscode.workspace.getConfiguration('terminal.integrated.env');
   const envConfig = vscode.workspace.getConfiguration();
   const claudeCodeConfig = vscode.workspace.getConfiguration('claudeCode');
@@ -113,7 +116,7 @@ function configureClaudeCode(port: number): void {
   terminalEnv.update(platform, {
     ...current,
     ANTHROPIC_BASE_URL: url,
-    ANTHROPIC_API_KEY: current['ANTHROPIC_API_KEY'] || 'dummy',
+    ANTHROPIC_API_KEY: dummyKey,
     ANTHROPIC_AUTH_TOKEN: '',   // clear conflicting token
   }, vscode.ConfigurationTarget.Workspace);
 
@@ -121,13 +124,13 @@ function configureClaudeCode(port: number): void {
   envConfig.update('env', {
     ...currentEnv,
     ANTHROPIC_BASE_URL: url,
-    ANTHROPIC_API_KEY: currentEnv['ANTHROPIC_API_KEY'] || 'dummy',
+    ANTHROPIC_API_KEY: dummyKey,
     ANTHROPIC_AUTH_TOKEN: '',
   }, vscode.ConfigurationTarget.Workspace);
 
   const currentClaudeVars = claudeCodeConfig.get<Array<{ name: string; value: string }>>('environmentVariables', []);
   const mergedClaudeVars = upsertEnvironmentVariable(currentClaudeVars, 'ANTHROPIC_BASE_URL', url);
-  const withApiKey = upsertEnvironmentVariable(mergedClaudeVars, 'ANTHROPIC_API_KEY', currentEnv['ANTHROPIC_API_KEY'] || 'dummy');
+  const withApiKey = upsertEnvironmentVariable(mergedClaudeVars, 'ANTHROPIC_API_KEY', dummyKey);
   const finalClaudeVars = upsertEnvironmentVariable(withApiKey, 'ANTHROPIC_AUTH_TOKEN', '');
   claudeCodeConfig.update('environmentVariables', finalClaudeVars, vscode.ConfigurationTarget.Workspace);
 }

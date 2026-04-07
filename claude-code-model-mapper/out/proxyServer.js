@@ -141,18 +141,43 @@ class ProxyServer extends events_1.EventEmitter {
             startTime: Date.now(),
         };
         this.emit('requestEvent', { ...event });
+        // Handle Claude Code's token counting endpoint locally
+        if (req.url?.includes('/messages/count_tokens')) {
+            this.emitUpdate(id, { sourceModel: 'local-token-counter', targetModel: 'local', status: 'processing' });
+            // Mock response for token counting since most OpenAI compatible APIs don't support it directly
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ input_tokens: 0 }));
+            this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+            return;
+        }
+        // Handle root / healthcheck endpoints locally
+        if (req.url === '/' || req.url === '') {
+            this.emitUpdate(id, { sourceModel: 'local-healthcheck', targetModel: 'local', status: 'processing' });
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok' }));
+            this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+            return;
+        }
         let body = '';
         req.on('data', chunk => { body += chunk; });
         req.on('end', () => {
-            let parsed;
-            try {
-                parsed = JSON.parse(body);
+            let parsed = {};
+            if (body.trim()) {
+                try {
+                    parsed = JSON.parse(body);
+                }
+                catch {
+                    res.writeHead(400, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+                    this.emitUpdate(id, { status: 'error', error: 'Invalid JSON body', endTime: Date.now() });
+                    return;
+                }
             }
-            catch {
-                res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-                this.emitUpdate(id, { status: 'error', error: 'Invalid JSON body', endTime: Date.now() });
-                return;
+            // Fix for Fireworks AI and strict providers: ALWAYS cap max_tokens to 4096
+            // Fireworks has a hard limit on max_tokens for Anthropic-compatible /v1/messages
+            // and OpenAI format also supports capping to prevent 400 Bad Request
+            if (typeof parsed['max_tokens'] === 'number' && parsed['max_tokens'] > 4096) {
+                parsed['max_tokens'] = 4096;
             }
             const sourceModel = parsed['model'] || '';
             const targetModel = (0, modelMapper_1.resolve)(sourceModel, this.modelConfigs);

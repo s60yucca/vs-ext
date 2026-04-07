@@ -16,7 +16,7 @@
         },
         {
             "name": "ANTHROPIC_API_KEY",
-            "value": "dummy"
+            "value": "${env:ANTHROPIC_API_KEY}"
         },
         {
             "name": "ANTHROPIC_AUTH_TOKEN",
