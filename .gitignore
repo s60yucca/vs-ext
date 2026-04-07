@@ -8,3 +8,4 @@ claude-code-model-mapper/out/
 out/
 node_modules/
 .vscode/settings.json
+claude-code-model-mapper/diff.txt

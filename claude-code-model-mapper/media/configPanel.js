@@ -4,6 +4,7 @@
   const providerPresets = {
     openrouter: 'https://openrouter.ai/api/v1',
     openadapter: 'https://api.openadapter.in',
+    fireworks: 'https://api.fireworks.ai/inference/v1'
   };
 
   function byId(id) {
@@ -29,6 +30,7 @@
     const normalized = String(baseUrl || '').trim().replace(/\/$/, '');
     if (normalized === providerPresets.openrouter) return 'openrouter';
     if (normalized === providerPresets.openadapter) return 'openadapter';
+    if (normalized === providerPresets.fireworks || normalized === 'https://api.fireworks.ai/inference') return 'fireworks';
     return 'custom';
   }
 
@@ -52,6 +54,12 @@
   document.addEventListener('input', function (event) {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
+
+    if (target.id === 'baseUrl') {
+      byId('providerPreset').value = detectPreset(target.value);
+      return;
+    }
+
     const index = Number(target.dataset.i);
     const field = target.dataset.f;
     if (!Number.isInteger(index) || !field || !configs[index]) return;
@@ -129,7 +137,8 @@
         if (byId('nativeAnthropic')) {
           byId('nativeAnthropic').checked = !!msg.lmProvider.nativeAnthropic;
         }
-        byId('devBanner').textContent = 'DEV BUILD 2026-03-20 · mappings=' + configs.length + ' · baseUrl=' + (baseUrl || '(empty)');
+        const v = msg.version ? 'v' + msg.version : 'DEV BUILD';
+        byId('devBanner').textContent = v + ' · mappings=' + configs.length + ' · baseUrl=' + (baseUrl || '(empty)');
       }
       if (msg.hasApiKey) {
         byId('apiKey').placeholder = '********  (saved - leave blank to keep)';

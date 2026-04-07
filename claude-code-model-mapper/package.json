@@ -2,7 +2,7 @@
   "name": "claude-code-model-mapper",
   "displayName": "Claude Code Model Mapper DEV",
   "description": "Map Claude Code models to alternative LLM providers via a local proxy server",
-  "version": "0.2.0",
+  "version": "0.3.3",
   "publisher": "thohoang",
   "license": "MIT",
   "engines": {
@@ -126,7 +126,10 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "node --test out/test/*.test.js"
+    "test": "node --test out/test/*.test.js",
+    "release:patch": "vsce package patch --no-git-tag-version --allow-missing-repository",
+    "release:minor": "vsce package minor --no-git-tag-version --allow-missing-repository",
+    "install:vsix": "\"/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code\" --install-extension ${npm_package_name}-${npm_package_version}.vsix --force"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

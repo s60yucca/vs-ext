@@ -36,6 +36,7 @@ export type ConfigPanelResponse = {
     configs: ModelConfig[];
     lmProvider: LMProviderConfig;
     hasApiKey: boolean;
+    version?: string;
 } | {
     type: 'saved';
     scope: 'configs' | 'provider';

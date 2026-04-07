@@ -71,7 +71,8 @@ class ConfigPanel {
         }
         const lmProvider = this.store.getLMProviderConfig();
         const apiKey = await this.store.getApiKey();
-        this.post({ type: 'init', configs, lmProvider, hasApiKey: !!apiKey });
+        const version = vscode.extensions.getExtension('thohoang.claude-code-model-mapper')?.packageJSON?.version || 'unknown';
+        this.post({ type: 'init', configs, lmProvider, hasApiKey: !!apiKey, version });
     }
     async handleSaveConfigs(configs) {
         for (const c of configs) {
@@ -180,6 +181,7 @@ function getHtml(webview, extensionUri) {
       <select id="providerPreset">
         <option value="openrouter">OpenRouter</option>
         <option value="openadapter">OpenAdapter</option>
+        <option value="fireworks">Fireworks AI</option>
         <option value="custom">Custom</option>
       </select>
     </div>
