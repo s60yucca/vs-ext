@@ -1,9 +1,9 @@
 import { ModelConfig } from './types';
 
 export const DEFAULT_MODEL_CONFIGS: ModelConfig[] = [
-  { sourceModel: 'claude-haiku',  targetModel: 'minimax/minimax-m2.7',                    enabled: true },
-  { sourceModel: 'claude-sonnet', targetModel: 'meta-llama/llama-3.3-70b-instruct',       enabled: true },
-  { sourceModel: 'claude-opus',   targetModel: 'nvidia/llama-3.1-nemotron-ultra-253b',    enabled: true },
+  { sourceModel: 'claude-haiku',  targetModel: 'accounts/fireworks/models/llama-v3p2-3b-instruct',    enabled: true },
+  { sourceModel: 'claude-sonnet', targetModel: 'accounts/fireworks/models/llama-v3p1-70b-instruct', enabled: true },
+  { sourceModel: 'claude-opus',   targetModel: 'accounts/fireworks/models/deepseek-r1',               enabled: true },
 ];
 
 export function mergeModelConfigs(configs: ModelConfig[]): ModelConfig[] {

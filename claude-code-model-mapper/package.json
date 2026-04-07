@@ -2,7 +2,7 @@
   "name": "claude-code-model-mapper",
   "displayName": "Claude Code Model Mapper DEV",
   "description": "Map Claude Code models to alternative LLM providers via a local proxy server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "thohoang",
   "license": "MIT",
   "engines": {

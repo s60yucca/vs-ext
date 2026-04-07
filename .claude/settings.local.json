@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(npx @vscode/vsce package --out claude-code-model-mapper-0.2.0.vsix --no-dependencies)",
+      "Bash(npm install:*)",
+      "Bash(npx @vscode/vsce package --out claude-code-model-mapper-0.2.0.vsix --allow-missing-repository)",
+      "Bash(unzip -l claude-code-model-mapper-0.2.0.vsix)"
+    ]
+  }
+}

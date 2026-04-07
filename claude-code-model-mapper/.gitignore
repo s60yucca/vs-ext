@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+
+# VSIX packages
+*.vsix
+
+# VS Code settings that may contain sensitive data
+.vscode/settings.json
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,20 @@
+# Exclude VS Code settings that may contain sensitive config
+.vscode/settings.json
+
+# Dependencies
+node_modules/
+
+# Source files (TypeScript - compiled JS is in out/)
+src/
+tsconfig.json
+
+# Development files
+.gitignore
+package-lock.json
+
+# VSIX packages
+*.vsix
+
+# Documentation (optional, keep if needed)
+# README.md
+# LICENSE

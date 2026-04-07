@@ -8,6 +8,13 @@ import { RequestEvent } from './types';
 
 let activeProxy: ProxyServer | undefined;
 
+// Store original Claude Code settings before overwriting
+let originalSettings: {
+  baseUrl?: string;
+  apiKey?: string;
+  authToken?: string;
+} = {};
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const store = new ConfigStore(context);
   const proxy = new ProxyServer();
@@ -81,7 +88,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const stopProxy = async () => {
     await proxy.stop();
     statusBar.setStopped();
-    vscode.window.showInformationMessage('Claude Code Model Mapper: Proxy đã dừng.');
+    restoreOriginalSettings();
+    vscode.window.showInformationMessage('Claude Code Model Mapper: Proxy đã dừng. Claude Code sẽ dùng API key gốc.');
   };
 
   // Register commands
@@ -103,10 +111,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   proxy.once('restarted', (port: number) => configureClaudeCode(port));
 }
 
+function saveOriginalSettings(): void {
+  // Only save if not already saved (first time only)
+  if (originalSettings.baseUrl !== undefined) return;
+
+  const claudeCodeConfig = vscode.workspace.getConfiguration('claudeCode');
+  const currentVars = claudeCodeConfig.get<Array<{ name: string; value: string }>>('environmentVariables', []);
+
+  originalSettings.baseUrl = currentVars.find(v => v.name === 'ANTHROPIC_BASE_URL')?.value;
+  originalSettings.apiKey = currentVars.find(v => v.name === 'ANTHROPIC_API_KEY')?.value;
+  originalSettings.authToken = currentVars.find(v => v.name === 'ANTHROPIC_AUTH_TOKEN')?.value;
+}
+
 function configureClaudeCode(port: number): void {
   const url = `http://127.0.0.1:${port}`;
   // Dummy key must be exactly 108 characters (13 prefix + 95 alphanumeric/hyphens) to pass Claude Code's regex validation
   const dummyKey = 'sk-ant-api03-dummykey000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
+
+  // Save original settings before overwriting (first time only)
+  saveOriginalSettings();
 
   const terminalEnv = vscode.workspace.getConfiguration('terminal.integrated.env');
   const envConfig = vscode.workspace.getConfiguration();
@@ -133,6 +156,49 @@ function configureClaudeCode(port: number): void {
   const withApiKey = upsertEnvironmentVariable(mergedClaudeVars, 'ANTHROPIC_API_KEY', dummyKey);
   const finalClaudeVars = upsertEnvironmentVariable(withApiKey, 'ANTHROPIC_AUTH_TOKEN', '');
   claudeCodeConfig.update('environmentVariables', finalClaudeVars, vscode.ConfigurationTarget.Workspace);
+}
+
+function restoreOriginalSettings(): void {
+  if (!originalSettings.baseUrl && !originalSettings.apiKey && !originalSettings.authToken) {
+    vscode.window.showInformationMessage('Không có settings gốc để restore.');
+    return;
+  }
+
+  const claudeCodeConfig = vscode.workspace.getConfiguration('claudeCode');
+  let currentVars = claudeCodeConfig.get<Array<{ name: string; value: string }>>('environmentVariables', []);
+
+  // Remove ANTHROPIC_* variables
+  currentVars = currentVars.filter(v => !v.name.startsWith('ANTHROPIC_'));
+
+  // Restore original settings if they exist
+  if (originalSettings.baseUrl) {
+    currentVars.push({ name: 'ANTHROPIC_BASE_URL', value: originalSettings.baseUrl });
+  }
+  if (originalSettings.apiKey) {
+    currentVars.push({ name: 'ANTHROPIC_API_KEY', value: originalSettings.apiKey });
+  }
+  if (originalSettings.authToken) {
+    currentVars.push({ name: 'ANTHROPIC_AUTH_TOKEN', value: originalSettings.authToken });
+  }
+
+  claudeCodeConfig.update('environmentVariables', currentVars, vscode.ConfigurationTarget.Workspace);
+
+  // Also restore terminal environment
+  const terminalEnv = vscode.workspace.getConfiguration('terminal.integrated.env');
+  const platform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'osx' : 'linux';
+  const current = terminalEnv.get<Record<string, string>>(platform, {});
+
+  const updatedTerminalEnv = { ...current };
+  if (originalSettings.baseUrl) updatedTerminalEnv.ANTHROPIC_BASE_URL = originalSettings.baseUrl;
+  if (originalSettings.apiKey) updatedTerminalEnv.ANTHROPIC_API_KEY = originalSettings.apiKey;
+  if (originalSettings.authToken) updatedTerminalEnv.ANTHROPIC_AUTH_TOKEN = originalSettings.authToken;
+
+  terminalEnv.update(platform, updatedTerminalEnv, vscode.ConfigurationTarget.Workspace);
+
+  // Clear the stored original settings
+  originalSettings = {};
+
+  vscode.window.showInformationMessage('Đã restore settings gốc của Claude Code. Khởi động lại Claude Code để áp d��ng.');
 }
 
 function upsertEnvironmentVariable(
