@@ -8,14 +8,23 @@
       "options": {
         "cwd": "${workspaceFolder}/claude-code-model-mapper"
       },
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      },
       "problemMatcher": [
         "$tsc"
       ],
       "detail": "Compile the Claude Code Model Mapper extension"
+    },
+    {
+      "label": "Build & Install VSIX",
+      "type": "shell",
+      "command": "npm run release:patch && npm run install:vsix",
+      "options": {
+        "cwd": "${workspaceFolder}/claude-code-model-mapper"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
     }
   ]
 }
