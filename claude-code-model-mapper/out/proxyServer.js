@@ -619,7 +619,15 @@ function anthropicToOpenAI(body) {
                 const toolResults = blocks
                     .filter(b => b.type === 'tool_result')
                     .map(block => {
-                    const contentStr = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+                    let contentStr = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+                    // Tích hợp tư tưởng RTK: Auto-truncate massive tool outputs to save tokens
+                    const MAX_LEN = 10000;
+                    if (contentStr.length > MAX_LEN) {
+                        const half = Math.floor(MAX_LEN / 2);
+                        contentStr = contentStr.slice(0, half) +
+                            `\n\n... [PROXY AUTO-TRUNCATED: ${contentStr.length - MAX_LEN} chars removed to save tokens] ...\n\n` +
+                            contentStr.slice(-half);
+                    }
                     return {
                         role: 'tool',
                         tool_call_id: block.tool_use_id || '',
