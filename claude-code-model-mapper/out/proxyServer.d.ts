@@ -24,6 +24,7 @@ export declare function buildUpstreamUrl(baseUrl: string, rewrittenUrl: string):
 export declare function extractTextContent(content: unknown): string;
 export declare function extractDeltaText(delta: unknown): string;
 export declare function sanitizeVisibleText(text: string): string;
+export declare function mapStreamingFinishReason(reason: unknown, hasToolUse: boolean): string | null;
 export declare function anthropicToOpenAI(body: Record<string, unknown>): Record<string, unknown>;
 export declare function openAIChatToResponses(body: Record<string, unknown>): Record<string, unknown>;
 //# sourceMappingURL=proxyServer.d.ts.map

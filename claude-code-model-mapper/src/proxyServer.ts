@@ -278,8 +278,10 @@ export class ProxyServer extends EventEmitter {
           let outputTokens = 0;
           let sentStart = false;
           const sanitizer = new StreamingTextSanitizer();
-          const toolStates = new Map<number, { id: string; name: string; started: boolean }>();
+          const toolStates = new Map<number, { id: string; name: string; started: boolean; blockIndex?: number }>();
+          let nextContentBlockIndex = 0;
           let textBlockStarted = false;
+          let textBlockIndex: number | null = null;
           let finishReason: string | null = null;
           const model = body ? (JSON.parse(body)['model'] as string) || '' : '';
           upstream.on('data', (chunkBuffer: Buffer | string) => {
@@ -293,12 +295,14 @@ export class ProxyServer extends EventEmitter {
               const data = line.slice(6).trim();
               if (data === '[DONE]') {
                 if (textBlockStarted) {
-                  res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+                  res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: textBlockIndex ?? 0 })}\n\n`);
                 }
-                for (const [toolIndex] of toolStates) {
-                  res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: getToolBlockIndex(toolIndex, textBlockStarted) })}\n\n`);
+                for (const toolState of toolStates.values()) {
+                  if (toolState.started && toolState.blockIndex !== undefined) {
+                    res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: toolState.blockIndex })}\n\n`);
+                  }
                 }
-                res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: mapFinishReason(finishReason), stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
+                res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: mapStreamingFinishReason(finishReason, hasStartedToolUse(toolStates)), stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
                 res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
                 return;
               }
@@ -345,12 +349,14 @@ export class ProxyServer extends EventEmitter {
                     outputTokens = chunk.response.usage.output_tokens || outputTokens;
                   }
                   if (textBlockStarted) {
-                    res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+                    res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: textBlockIndex ?? 0 })}\n\n`);
                   }
-                  for (const [toolIndex] of toolStates) {
-                    res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: getToolBlockIndex(toolIndex, textBlockStarted) })}\n\n`);
+                  for (const toolState of toolStates.values()) {
+                    if (toolState.started && toolState.blockIndex !== undefined) {
+                      res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: toolState.blockIndex })}\n\n`);
+                    }
                   }
-                  res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
+                  res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: mapStreamingFinishReason(finishReason, hasStartedToolUse(toolStates)), stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
                   res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
                   return;
                 }
@@ -365,9 +371,10 @@ export class ProxyServer extends EventEmitter {
                 if (text) {
                   if (!textBlockStarted) {
                     textBlockStarted = true;
-                    res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
+                    textBlockIndex = nextContentBlockIndex++;
+                    res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: textBlockIndex, content_block: { type: 'text', text: '' } })}\n\n`);
                   }
-                  res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })}\n\n`);
+                  res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: textBlockIndex ?? 0, delta: { type: 'text_delta', text } })}\n\n`);
                 }
                 for (const toolCall of extractDeltaToolCalls(delta)) {
                   const existing = toolStates.get(toolCall.index) || {
@@ -379,16 +386,17 @@ export class ProxyServer extends EventEmitter {
                   if (toolCall.name) existing.name = toolCall.name;
                   if (!existing.started && existing.name) {
                     existing.started = true;
+                    existing.blockIndex = nextContentBlockIndex++;
                     res.write(`event: content_block_start\ndata: ${JSON.stringify({
                       type: 'content_block_start',
-                      index: getToolBlockIndex(toolCall.index, textBlockStarted),
+                      index: existing.blockIndex,
                       content_block: { type: 'tool_use', id: existing.id, name: existing.name, input: {} },
                     })}\n\n`);
                   }
                   if (existing.started && toolCall.argumentsChunk) {
                     res.write(`event: content_block_delta\ndata: ${JSON.stringify({
                       type: 'content_block_delta',
-                      index: getToolBlockIndex(toolCall.index, textBlockStarted),
+                      index: existing.blockIndex ?? 0,
                       delta: { type: 'input_json_delta', partial_json: toolCall.argumentsChunk },
                     })}\n\n`);
                   }
@@ -653,8 +661,15 @@ function mapFinishReason(reason: unknown): string | null {
   return typeof reason === 'string' ? reason : null;
 }
 
-function getToolBlockIndex(toolIndex: number, hasTextBlock: boolean): number {
-  return hasTextBlock ? toolIndex + 1 : toolIndex;
+export function mapStreamingFinishReason(reason: unknown, hasToolUse: boolean): string | null {
+  if (hasToolUse) {
+    return 'tool_use';
+  }
+  return mapFinishReason(reason);
+}
+
+function hasStartedToolUse(toolStates: Map<number, { started: boolean }>): boolean {
+  return Array.from(toolStates.values()).some(toolState => toolState.started);
 }
 
 // Convert Anthropic Messages API body → OpenAI Chat Completions body

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { anthropicToOpenAI, buildUpstreamUrl, extractDeltaText, extractTextContent, openAIChatToResponses, sanitizeVisibleText } from '../proxyServer';
+import { anthropicToOpenAI, buildUpstreamUrl, extractDeltaText, extractTextContent, mapStreamingFinishReason, openAIChatToResponses, sanitizeVisibleText } from '../proxyServer';
 
 test('buildUpstreamUrl keeps /v1 when provider base url has no version suffix', () => {
   const url = buildUpstreamUrl('https://api.openadapter.in', '/v1/chat/completions');
@@ -153,6 +153,11 @@ test('openAIChatToResponses converts chat tool calls into Responses input items'
       { role: 'user', content: 'Continue' },
     ],
   });
+});
+
+test('mapStreamingFinishReason preserves tool_use when Responses streams function calls', () => {
+  assert.equal(mapStreamingFinishReason('stop', true), 'tool_use');
+  assert.equal(mapStreamingFinishReason('stop', false), 'end_turn');
 });
 
 test('extractTextContent supports OpenAI-style content arrays', () => {
