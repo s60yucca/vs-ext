@@ -9,6 +9,9 @@ export interface ModelConfig {
 export interface LMProviderConfig {
   baseUrl: string; // e.g. "https://openrouter.ai/api/v1"
   nativeAnthropic?: boolean; // Set to true if the provider supports native Anthropic Messages API
+  authHeader?: string;       // Custom auth header name, e.g. "api-key" for Azure
+  authValuePrefix?: string;  // Prefix for auth value, e.g. "" for Azure (default "Bearer ")
+  isFullEndpoint?: boolean;  // When true, baseUrl is the complete endpoint URL (no path appending)
 }
 
 export interface ProxyServerOptions {

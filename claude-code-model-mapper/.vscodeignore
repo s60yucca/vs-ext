@@ -11,6 +11,7 @@ tsconfig.json
 # Development files
 .gitignore
 package-lock.json
+proxy_debug.log
 
 # VSIX packages
 *.vsix

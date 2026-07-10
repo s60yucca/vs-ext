@@ -154,6 +154,7 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
         <option value="openrouter">OpenRouter</option>
         <option value="openadapter">OpenAdapter</option>
         <option value="fireworks">Fireworks AI</option>
+        <option value="azure">Azure OpenAI</option>
         <option value="custom">Custom</option>
       </select>
     </div>
@@ -165,8 +166,27 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
         Bypass OpenAI format (Provider supports Anthropic Native API)
       </label>
     </div>
+    <details id="advancedSection" style="margin-top: 8px;">
+      <summary style="cursor: pointer; font-size: 11px; opacity: 0.7;">Advanced Auth &amp; URL</summary>
+      <div style="margin-top: 6px; display: grid; gap: 4px;">
+        <div>
+          <label>Auth Header</label>
+          <input id="authHeader" placeholder="authorization">
+        </div>
+        <div>
+          <label>Auth Value Prefix</label>
+          <input id="authValuePrefix" placeholder="Bearer ">
+        </div>
+        <div>
+          <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer;">
+            <input type="checkbox" id="isFullEndpoint" style="width: auto;">
+            Full endpoint URL (don't append path)
+          </label>
+        </div>
+      </div>
+    </details>
   </div>
-  <div class="hint">OpenAdapter preset uses <code>https://api.openadapter.in</code> and works with OpenAI-compatible models such as <code>minimax/minimax-m2.7</code>.</div>
+  <div class="hint">For Azure, set Base URL to the full endpoint (e.g. <code>https://YOUR.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-08-01-preview</code>), Auth Header to <code>api-key</code>, and check Full endpoint.</div>
   <div id="provMsg"></div>
   <button id="saveProvBtn" style="margin-top:8px">Lưu provider</button>
 </div>

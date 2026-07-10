@@ -29,6 +29,9 @@ export class ConfigStore {
     return {
       baseUrl: config.baseUrl || 'https://openrouter.ai/api/v1',
       nativeAnthropic: config.nativeAnthropic || false,
+      authHeader: config.authHeader,
+      authValuePrefix: config.authValuePrefix,
+      isFullEndpoint: config.isFullEndpoint || false,
     };
   }
 

@@ -39,11 +39,13 @@ exports.extractTextContent = extractTextContent;
 exports.extractDeltaText = extractDeltaText;
 exports.sanitizeVisibleText = sanitizeVisibleText;
 exports.anthropicToOpenAI = anthropicToOpenAI;
+exports.openAIChatToResponses = openAIChatToResponses;
 const http = __importStar(require("http"));
 const https = __importStar(require("https"));
 const zlib = __importStar(require("zlib"));
 const events_1 = require("events");
 const modelMapper_1 = require("./modelMapper");
+const PROXY_DEBUG_FILE = '/Users/thohoang/Dev/AI/vs-ext/claude-code-model-mapper/proxy_debug.log';
 function generateRequestId() {
     const hex = (Date.now() ^ (Math.random() * 0xffff | 0)).toString(16).slice(-4);
     return `req-${hex}`;
@@ -192,13 +194,50 @@ class ProxyServer extends events_1.EventEmitter {
             if (shouldConvert) {
                 parsed = anthropicToOpenAI(parsed);
                 rewrittenUrl = rewrittenUrl.replace('/messages', '/chat/completions').replace(/\?.*$/, '');
+                // Support for OpenAI Responses API (e.g. gpt-5.5) which uses 'input' instead of 'messages'
+                const finalUrl = this.providerConfig.isFullEndpoint
+                    ? this.providerConfig.baseUrl
+                    : buildUpstreamUrl(this.providerConfig.baseUrl, rewrittenUrl).toString();
+                if (finalUrl.includes('/responses')) {
+                    parsed = openAIChatToResponses(parsed);
+                    if (parsed['max_tokens'] !== undefined) {
+                        parsed['max_output_tokens'] = parsed['max_tokens'];
+                        delete parsed['max_tokens'];
+                    }
+                    if (parsed['stream_options'] !== undefined) {
+                        delete parsed['stream_options'];
+                    }
+                    if (Array.isArray(parsed['tools'])) {
+                        parsed['tools'] = parsed['tools'].map((t) => {
+                            if (t.type === 'function' && t.function) {
+                                return {
+                                    type: 'function',
+                                    name: t.function.name,
+                                    description: t.function.description,
+                                    parameters: t.function.parameters
+                                };
+                            }
+                            return t;
+                        });
+                    }
+                    const tc = parsed['tool_choice'];
+                    if (tc && typeof tc === 'object' && tc.type === 'function' && tc.function) {
+                        parsed['tool_choice'] = {
+                            type: 'function',
+                            name: tc.function.name
+                        };
+                    }
+                }
             }
             rewrittenBody = JSON.stringify(parsed);
             this.forwardRequest(req, rewrittenBody, rewrittenUrl, shouldConvert, isStreaming, res, id);
         });
     }
     forwardRequest(req, body, rewrittenUrl, convertResponse, isStreaming, res, id) {
-        const url = buildUpstreamUrl(this.providerConfig.baseUrl, rewrittenUrl);
+        const url = this.providerConfig.isFullEndpoint
+            ? new URL(this.providerConfig.baseUrl)
+            : buildUpstreamUrl(this.providerConfig.baseUrl, rewrittenUrl);
+        appendProxyDebug(`\n\n--- NEW REQUEST TO: ${url.toString()} ---\n${summarizeOutboundBody(body)}\n`);
         const isHttps = url.protocol === 'https:';
         const transport = isHttps ? https : http;
         const headers = {};
@@ -212,7 +251,9 @@ class ProxyServer extends events_1.EventEmitter {
             }
         }
         if (this.apiKey) {
-            headers['authorization'] = `Bearer ${this.apiKey}`;
+            const authHeader = this.providerConfig.authHeader || 'authorization';
+            const authPrefix = this.providerConfig.authValuePrefix ?? 'Bearer ';
+            headers[authHeader] = authPrefix ? authPrefix + this.apiKey : this.apiKey;
         }
         if (convertResponse) {
             headers['accept-encoding'] = 'identity';
@@ -239,6 +280,7 @@ class ProxyServer extends events_1.EventEmitter {
                         errMsg = parsed?.error?.message || parsed?.message || errMsg;
                     }
                     catch { /* use status code + url */ }
+                    appendProxyDebug(`--- UPSTREAM ERROR ${proxyRes.statusCode} ---\n${errBody}\n`);
                     res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
                     res.end(errBody);
                     this.emitUpdate(id, { status: 'error', error: errMsg, endTime: Date.now() });
@@ -248,6 +290,13 @@ class ProxyServer extends events_1.EventEmitter {
                 if (convertResponse && isStreaming) {
                     // Stream: convert OpenAI SSE chunks → Anthropic SSE events
                     res.writeHead(proxyRes.statusCode || 200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+                    const fs = require('fs');
+                    const debugFile = PROXY_DEBUG_FILE;
+                    const originalWrite = res.write.bind(res);
+                    res.write = (chunk) => {
+                        fs.appendFileSync(debugFile, `OUT: ${chunk.toString()}`);
+                        return originalWrite(chunk);
+                    };
                     let buffer = '';
                     let inputTokens = 0;
                     let outputTokens = 0;
@@ -257,8 +306,10 @@ class ProxyServer extends events_1.EventEmitter {
                     let textBlockStarted = false;
                     let finishReason = null;
                     const model = body ? JSON.parse(body)['model'] || '' : '';
-                    upstream.on('data', (chunk) => {
-                        buffer += chunk.toString();
+                    upstream.on('data', (chunkBuffer) => {
+                        const chunkStr = chunkBuffer.toString();
+                        fs.appendFileSync(debugFile, chunkStr);
+                        buffer += chunkStr;
                         const lines = buffer.split('\n');
                         buffer = lines.pop() || '';
                         for (const line of lines) {
@@ -268,13 +319,13 @@ class ProxyServer extends events_1.EventEmitter {
                             const data = line.slice(6).trim();
                             if (data === '[DONE]') {
                                 if (textBlockStarted) {
-                                    res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+                                    res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
                                 }
                                 for (const [toolIndex] of toolStates) {
-                                    res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: getToolBlockIndex(toolIndex, textBlockStarted) })}\n\n`);
+                                    res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: getToolBlockIndex(toolIndex, textBlockStarted) })}\n\n`);
                                 }
-                                res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: mapFinishReason(finishReason), stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
-                                res.write(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+                                res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: mapFinishReason(finishReason), stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
+                                res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
                                 return;
                             }
                             try {
@@ -283,26 +334,69 @@ class ProxyServer extends events_1.EventEmitter {
                                     inputTokens = chunk.usage.prompt_tokens || 0;
                                     outputTokens = chunk.usage.completion_tokens || 0;
                                 }
-                                const choice = chunk.choices?.[0];
+                                let choice = chunk.choices?.[0];
+                                let delta = choice?.delta;
+                                // Support for Responses API where delta is often a string and type indicates the event
+                                if (!delta && (typeof chunk.delta === 'string' || chunk.type === 'response.output_item.added')) {
+                                    if (chunk.type?.includes('text')) {
+                                        delta = { content: chunk.delta };
+                                    }
+                                    else if (chunk.type === 'response.output_item.added' && chunk.item?.type === 'function_call') {
+                                        delta = {
+                                            tool_calls: [{
+                                                    index: chunk.output_index || 0,
+                                                    id: chunk.item.call_id || chunk.item.id || 'tool_0',
+                                                    function: { name: chunk.item.name, arguments: '' }
+                                                }]
+                                        };
+                                    }
+                                    else if (chunk.type?.includes('function') || chunk.type?.includes('tool')) {
+                                        // Rough approximation for tool call delta
+                                        delta = {
+                                            tool_calls: [{
+                                                    index: chunk.output_index || 0,
+                                                    id: chunk.call_id || chunk.item_id || 'tool_0',
+                                                    function: { arguments: chunk.delta }
+                                                }]
+                                        };
+                                    }
+                                    else {
+                                        delta = { content: chunk.delta || '' };
+                                    }
+                                }
                                 if (choice?.finish_reason) {
                                     finishReason = choice.finish_reason;
                                 }
-                                const delta = choice?.delta;
+                                else if (chunk.type === 'response.done' || chunk.type === 'response.completed') {
+                                    finishReason = 'stop';
+                                    if (chunk.response?.usage) {
+                                        outputTokens = chunk.response.usage.output_tokens || outputTokens;
+                                    }
+                                    if (textBlockStarted) {
+                                        res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+                                    }
+                                    for (const [toolIndex] of toolStates) {
+                                        res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: getToolBlockIndex(toolIndex, textBlockStarted) })}\n\n`);
+                                    }
+                                    res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
+                                    res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+                                    return;
+                                }
                                 if (!delta) {
                                     continue;
                                 }
                                 if (!sentStart) {
                                     sentStart = true;
-                                    res.write(`data: ${JSON.stringify({ type: 'message_start', message: { id: chunk.id || 'msg_proxy', type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: inputTokens, output_tokens: 0 } } })}\n\n`);
-                                    res.write(`data: ${JSON.stringify({ type: 'ping' })}\n\n`);
+                                    res.write(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: chunk.id || 'msg_proxy', type: 'message', role: 'assistant', content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: inputTokens, output_tokens: 0 } } })}\n\n`);
+                                    res.write(`event: ping\ndata: ${JSON.stringify({ type: 'ping' })}\n\n`);
                                 }
                                 const text = sanitizer.push(extractDeltaText(delta));
                                 if (text) {
                                     if (!textBlockStarted) {
                                         textBlockStarted = true;
-                                        res.write(`data: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
+                                        res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
                                     }
-                                    res.write(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })}\n\n`);
+                                    res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })}\n\n`);
                                 }
                                 for (const toolCall of extractDeltaToolCalls(delta)) {
                                     const existing = toolStates.get(toolCall.index) || {
@@ -316,14 +410,14 @@ class ProxyServer extends events_1.EventEmitter {
                                         existing.name = toolCall.name;
                                     if (!existing.started && existing.name) {
                                         existing.started = true;
-                                        res.write(`data: ${JSON.stringify({
+                                        res.write(`event: content_block_start\ndata: ${JSON.stringify({
                                             type: 'content_block_start',
                                             index: getToolBlockIndex(toolCall.index, textBlockStarted),
                                             content_block: { type: 'tool_use', id: existing.id, name: existing.name, input: {} },
                                         })}\n\n`);
                                     }
                                     if (existing.started && toolCall.argumentsChunk) {
-                                        res.write(`data: ${JSON.stringify({
+                                        res.write(`event: content_block_delta\ndata: ${JSON.stringify({
                                             type: 'content_block_delta',
                                             index: getToolBlockIndex(toolCall.index, textBlockStarted),
                                             delta: { type: 'input_json_delta', partial_json: toolCall.argumentsChunk },
@@ -692,5 +786,131 @@ function anthropicToOpenAI(body) {
         }
     }
     return result;
+}
+function openAIChatToResponses(body) {
+    const result = { ...body };
+    const messages = result['messages'];
+    if (!Array.isArray(messages)) {
+        return result;
+    }
+    result['input'] = messages.flatMap(message => {
+        if (!message || typeof message !== 'object') {
+            return [];
+        }
+        const typed = message;
+        const role = typeof typed.role === 'string' ? typed.role : 'user';
+        if (role === 'tool') {
+            return [{
+                    type: 'function_call_output',
+                    call_id: typeof typed.tool_call_id === 'string' ? typed.tool_call_id : '',
+                    output: stringifyResponsesOutput(typed.content),
+                }];
+        }
+        const items = [];
+        const content = normalizeResponsesMessageContent(typed.content, role);
+        if (content !== undefined) {
+            items.push({ role, content });
+        }
+        const toolCalls = typed.tool_calls;
+        if (Array.isArray(toolCalls)) {
+            for (const [index, toolCall] of toolCalls.entries()) {
+                const converted = convertChatToolCallToResponses(toolCall, index);
+                if (converted) {
+                    items.push(converted);
+                }
+            }
+        }
+        return items;
+    });
+    delete result['messages'];
+    return result;
+}
+function normalizeResponsesMessageContent(content, role) {
+    if (content === null) {
+        return role === 'assistant' ? undefined : '';
+    }
+    if (!Array.isArray(content)) {
+        return content;
+    }
+    return content.flatMap(part => {
+        if (!part || typeof part !== 'object') {
+            return [];
+        }
+        const typed = part;
+        if (typed.type === 'text' && typeof typed.text === 'string') {
+            return [{ type: role === 'assistant' ? 'output_text' : 'input_text', text: typed.text }];
+        }
+        if (typed.type === 'image_url' && typeof typed.image_url?.url === 'string') {
+            return [{ type: 'input_image', image_url: typed.image_url.url }];
+        }
+        return [part];
+    });
+}
+function stringifyResponsesOutput(content) {
+    if (typeof content === 'string') {
+        return content;
+    }
+    if (content === undefined || content === null) {
+        return '';
+    }
+    return JSON.stringify(content);
+}
+function convertChatToolCallToResponses(toolCall, index) {
+    if (!toolCall || typeof toolCall !== 'object') {
+        return null;
+    }
+    const typed = toolCall;
+    const name = typeof typed.function?.name === 'string' ? typed.function.name : '';
+    const args = typeof typed.function?.arguments === 'string' ? typed.function.arguments : '{}';
+    return {
+        type: 'function_call',
+        call_id: typeof typed.id === 'string' ? typed.id : `toolu_${index}`,
+        name,
+        arguments: args,
+    };
+}
+function appendProxyDebug(message) {
+    try {
+        const fs = require('fs');
+        fs.appendFileSync(PROXY_DEBUG_FILE, message);
+    }
+    catch {
+        // Debug logging must never break proxy traffic.
+    }
+}
+function summarizeOutboundBody(body) {
+    try {
+        const parsed = JSON.parse(body);
+        const input = parsed['input'];
+        const messages = parsed['messages'];
+        const inputItems = Array.isArray(input) ? input : [];
+        const messageItems = Array.isArray(messages) ? messages : [];
+        const inputWithToolCalls = inputItems
+            .map((item, index) => item && typeof item === 'object' && 'tool_calls' in item ? index : -1)
+            .filter(index => index >= 0);
+        const inputTypes = inputItems.map(item => {
+            if (!item || typeof item !== 'object') {
+                return typeof item;
+            }
+            const typed = item;
+            return String(typed.type || typed.role || 'object');
+        });
+        return JSON.stringify({
+            model: parsed['model'],
+            hasMessages: Array.isArray(messages),
+            messageCount: messageItems.length,
+            hasInput: Array.isArray(input),
+            inputCount: inputItems.length,
+            inputTypes,
+            inputWithToolCalls,
+            toolCount: Array.isArray(parsed['tools']) ? parsed['tools'].length : 0,
+            hasMaxTokens: parsed['max_tokens'] !== undefined,
+            hasMaxOutputTokens: parsed['max_output_tokens'] !== undefined,
+            hasStreamOptions: parsed['stream_options'] !== undefined,
+        });
+    }
+    catch {
+        return JSON.stringify({ unparseableBodyBytes: Buffer.byteLength(body) });
+    }
 }
 //# sourceMappingURL=proxyServer.js.map

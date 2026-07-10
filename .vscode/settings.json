@@ -31,7 +31,7 @@
         },
         {
             "sourceModel": "claude-opus",
-            "targetModel": "accounts/fireworks/models/deepseek-r1 (Dùng Deepseek-R1",
+            "targetModel": "gpt-5.5",
             "enabled": true
         }
     ],

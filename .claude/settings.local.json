@@ -5,7 +5,15 @@
       "Bash(npx @vscode/vsce package --out claude-code-model-mapper-0.2.0.vsix --no-dependencies)",
       "Bash(npm install:*)",
       "Bash(npx @vscode/vsce package --out claude-code-model-mapper-0.2.0.vsix --allow-missing-repository)",
-      "Bash(unzip -l claude-code-model-mapper-0.2.0.vsix)"
+      "Bash(unzip -l claude-code-model-mapper-0.2.0.vsix)",
+      "Skill(code-review)",
+      "Skill(code-review:*)",
+      "Bash(find .. -name CLAUDE.md -o -name CLAUDE.local.md)",
+      "Read(//Users/thohoang/Dev/AI/**)",
+      "Bash(git diff *)",
+      "Bash(find /Users/thohoang -name CLAUDE.md -o -name CLAUDE.local.md)",
+      "Read(//Users/thohoang/**)",
+      "Read(//tmp/**)"
     ]
   }
 }

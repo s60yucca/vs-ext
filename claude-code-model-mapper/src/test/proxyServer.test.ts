@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { anthropicToOpenAI, buildUpstreamUrl, extractDeltaText, extractTextContent, sanitizeVisibleText } from '../proxyServer';
+import { anthropicToOpenAI, buildUpstreamUrl, extractDeltaText, extractTextContent, openAIChatToResponses, sanitizeVisibleText } from '../proxyServer';
 
 test('buildUpstreamUrl keeps /v1 when provider base url has no version suffix', () => {
   const url = buildUpstreamUrl('https://api.openadapter.in', '/v1/chat/completions');
@@ -87,6 +87,9 @@ test('anthropicToOpenAI preserves tools, tool choice, tool_use and tool_result b
       },
     ],
     stream: true,
+    stream_options: {
+      include_usage: true,
+    },
     tools: [
       {
         type: 'function',
@@ -101,6 +104,54 @@ test('anthropicToOpenAI preserves tools, tool choice, tool_use and tool_result b
       type: 'function',
       function: { name: 'Skill' },
     },
+  });
+});
+
+test('openAIChatToResponses converts chat tool calls into Responses input items', () => {
+  const converted = openAIChatToResponses({
+    model: 'gpt-5.5',
+    messages: [
+      { role: 'system', content: 'You are helpful.' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'toolu_1',
+            type: 'function',
+            function: {
+              name: 'Skill',
+              arguments: JSON.stringify({ name: 'brainstorming' }),
+            },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'toolu_1',
+        content: 'done',
+      },
+      { role: 'user', content: 'Continue' },
+    ],
+  });
+
+  assert.deepEqual(converted, {
+    model: 'gpt-5.5',
+    input: [
+      { role: 'system', content: 'You are helpful.' },
+      {
+        type: 'function_call',
+        call_id: 'toolu_1',
+        name: 'Skill',
+        arguments: JSON.stringify({ name: 'brainstorming' }),
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'toolu_1',
+        output: 'done',
+      },
+      { role: 'user', content: 'Continue' },
+    ],
   });
 });
 

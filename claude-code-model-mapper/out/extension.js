@@ -103,7 +103,7 @@ async function activate(context) {
     const stopProxy = async () => {
         await proxy.stop();
         statusBar.setStopped();
-        restoreOriginalSettings();
+        await restoreOriginalSettings();
         vscode.window.showInformationMessage('Claude Code Model Mapper: Proxy đã dừng. Claude Code sẽ dùng API key gốc.');
     };
     // Register commands
@@ -157,14 +157,13 @@ function configureClaudeCode(port) {
     const finalClaudeVars = upsertEnvironmentVariable(withApiKey, 'ANTHROPIC_AUTH_TOKEN', '');
     claudeCodeConfig.update('environmentVariables', finalClaudeVars, vscode.ConfigurationTarget.Workspace);
 }
-function restoreOriginalSettings() {
-    if (!originalSettings.baseUrl && !originalSettings.apiKey && !originalSettings.authToken) {
-        vscode.window.showInformationMessage('Không có settings gốc để restore.');
-        return;
-    }
+async function restoreOriginalSettings() {
+    // Always clean up even if we don't have original settings saved in memory
+    // This handles the case where the user disabled the extension but the dummy keys were left behind
+    const dummyKey = 'sk-ant-api03-dummykey000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
     const claudeCodeConfig = vscode.workspace.getConfiguration('claudeCode');
     let currentVars = claudeCodeConfig.get('environmentVariables', []);
-    // Remove ANTHROPIC_* variables
+    // Remove ANTHROPIC_* variables injected by proxy
     currentVars = currentVars.filter(v => !v.name.startsWith('ANTHROPIC_'));
     // Restore original settings if they exist
     if (originalSettings.baseUrl) {
@@ -176,22 +175,39 @@ function restoreOriginalSettings() {
     if (originalSettings.authToken) {
         currentVars.push({ name: 'ANTHROPIC_AUTH_TOKEN', value: originalSettings.authToken });
     }
-    claudeCodeConfig.update('environmentVariables', currentVars, vscode.ConfigurationTarget.Workspace);
-    // Also restore terminal environment
+    await claudeCodeConfig.update('environmentVariables', currentVars, vscode.ConfigurationTarget.Workspace);
+    // Restore terminal environment
     const terminalEnv = vscode.workspace.getConfiguration('terminal.integrated.env');
     const platform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'osx' : 'linux';
     const current = terminalEnv.get(platform, {});
     const updatedTerminalEnv = { ...current };
+    // Clean up injected keys
+    if (updatedTerminalEnv.ANTHROPIC_BASE_URL && updatedTerminalEnv.ANTHROPIC_BASE_URL.includes('127.0.0.1')) {
+        delete updatedTerminalEnv.ANTHROPIC_BASE_URL;
+    }
+    if (updatedTerminalEnv.ANTHROPIC_API_KEY === dummyKey) {
+        delete updatedTerminalEnv.ANTHROPIC_API_KEY;
+    }
     if (originalSettings.baseUrl)
         updatedTerminalEnv.ANTHROPIC_BASE_URL = originalSettings.baseUrl;
     if (originalSettings.apiKey)
         updatedTerminalEnv.ANTHROPIC_API_KEY = originalSettings.apiKey;
     if (originalSettings.authToken)
         updatedTerminalEnv.ANTHROPIC_AUTH_TOKEN = originalSettings.authToken;
-    terminalEnv.update(platform, updatedTerminalEnv, vscode.ConfigurationTarget.Workspace);
+    await terminalEnv.update(platform, updatedTerminalEnv, vscode.ConfigurationTarget.Workspace);
+    // Restore global env.custom
+    const envConfig = vscode.workspace.getConfiguration('env');
+    const currentEnv = envConfig.get('custom', {});
+    const updatedEnv = { ...currentEnv };
+    if (updatedEnv.ANTHROPIC_BASE_URL && updatedEnv.ANTHROPIC_BASE_URL.includes('127.0.0.1')) {
+        delete updatedEnv.ANTHROPIC_BASE_URL;
+    }
+    if (updatedEnv.ANTHROPIC_API_KEY === dummyKey) {
+        delete updatedEnv.ANTHROPIC_API_KEY;
+    }
+    await envConfig.update('custom', updatedEnv, vscode.ConfigurationTarget.Workspace);
     // Clear the stored original settings
     originalSettings = {};
-    vscode.window.showInformationMessage('Đã restore settings gốc của Claude Code. Khởi động lại Claude Code để áp d��ng.');
 }
 function upsertEnvironmentVariable(vars, name, value) {
     const filtered = vars.filter(entry => entry.name !== name);
@@ -201,5 +217,6 @@ function upsertEnvironmentVariable(vars, name, value) {
 async function deactivate() {
     await activeProxy?.stop();
     activeProxy = undefined;
+    await restoreOriginalSettings();
 }
 //# sourceMappingURL=extension.js.map
