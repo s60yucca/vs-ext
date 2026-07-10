@@ -1,11 +1,17 @@
 import { EventEmitter } from 'events';
 import { ModelConfig, LMProviderConfig, ProxyServerOptions } from './types';
+export { anthropicToOpenAI } from './proxy/anthropicRequestAdapter';
+export { openAIChatToResponses } from './proxy/responsesAdapter';
+export { mapStreamingFinishReason } from './proxy/streamingResponseAdapter';
+export { extractDeltaText, extractTextContent, formatReviewFindings, sanitizeVisibleText } from './proxy/textAdapter';
+export { buildUpstreamUrl } from './proxy/urlBuilder';
 export declare class ProxyServer extends EventEmitter {
     private server;
     private _actualPort;
     private _isRunning;
     private restartAttempts;
-    private readonly MAX_RESTART;
+    private readonly maxRestartAttempts;
+    private readonly functionCallStore;
     private modelConfigs;
     private providerConfig;
     private apiKey;
@@ -17,14 +23,13 @@ export declare class ProxyServer extends EventEmitter {
     private tryBind;
     private handleServerError;
     private handleRequest;
+    private processRequestBody;
     private forwardRequest;
+    private handleUpstreamResponse;
+    private forwardNonStreamingResponse;
+    private forwardUpstreamError;
+    private sendLocalResponse;
+    private sendError;
     private emitUpdate;
 }
-export declare function buildUpstreamUrl(baseUrl: string, rewrittenUrl: string): URL;
-export declare function extractTextContent(content: unknown): string;
-export declare function extractDeltaText(delta: unknown): string;
-export declare function sanitizeVisibleText(text: string): string;
-export declare function mapStreamingFinishReason(reason: unknown, hasToolUse: boolean): string | null;
-export declare function anthropicToOpenAI(body: Record<string, unknown>): Record<string, unknown>;
-export declare function openAIChatToResponses(body: Record<string, unknown>): Record<string, unknown>;
 //# sourceMappingURL=proxyServer.d.ts.map

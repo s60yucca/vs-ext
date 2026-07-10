@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { anthropicToOpenAI, buildUpstreamUrl, extractDeltaText, extractTextContent, mapStreamingFinishReason, openAIChatToResponses, sanitizeVisibleText } from '../proxyServer';
+import { anthropicToOpenAI, buildUpstreamUrl, extractDeltaText, extractTextContent, formatReviewFindings, mapStreamingFinishReason, openAIChatToResponses, sanitizeVisibleText } from '../proxyServer';
 
 test('buildUpstreamUrl keeps /v1 when provider base url has no version suffix', () => {
   const url = buildUpstreamUrl('https://api.openadapter.in', '/v1/chat/completions');
@@ -155,6 +155,51 @@ test('openAIChatToResponses converts chat tool calls into Responses input items'
   });
 });
 
+test('openAIChatToResponses injects remembered function calls before orphaned tool outputs', () => {
+  const converted = openAIChatToResponses(
+    {
+      model: 'gpt-5.5',
+      messages: [
+        {
+          role: 'tool',
+          tool_call_id: 'call_todo_1',
+          content: JSON.stringify({ ok: true }),
+        },
+        { role: 'user', content: 'Continue' },
+      ],
+    },
+    new Map([
+      [
+        'call_todo_1',
+        {
+          type: 'function_call',
+          call_id: 'call_todo_1',
+          name: 'TodoWrite',
+          arguments: JSON.stringify({ todos: [] }),
+        },
+      ],
+    ])
+  );
+
+  assert.deepEqual(converted, {
+    model: 'gpt-5.5',
+    input: [
+      {
+        type: 'function_call',
+        call_id: 'call_todo_1',
+        name: 'TodoWrite',
+        arguments: JSON.stringify({ todos: [] }),
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'call_todo_1',
+        output: JSON.stringify({ ok: true }),
+      },
+      { role: 'user', content: 'Continue' },
+    ],
+  });
+});
+
 test('mapStreamingFinishReason preserves tool_use when Responses streams function calls', () => {
   assert.equal(mapStreamingFinishReason('stop', true), 'tool_use');
   assert.equal(mapStreamingFinishReason('stop', false), 'end_turn');
@@ -190,4 +235,30 @@ test('sanitizeVisibleText strips internal reasoning and tool tags', () => {
   ].join('\n'));
 
   assert.equal(text, 'Final answer');
+});
+
+test('formatReviewFindings renders the Claude review schema as readable Markdown', () => {
+  const text = formatReviewFindings(JSON.stringify([
+    {
+      file: 'src/proxyServer.ts',
+      line: 430,
+      summary: 'Responses replies are parsed as chat completions.',
+      failure_scenario: 'A non-streaming response loses its text and tool calls.',
+    },
+  ]));
+
+  assert.equal(text, [
+    '## Review findings',
+    '',
+    '### 1. Responses replies are parsed as chat completions.',
+    '',
+    '`src/proxyServer.ts:430`',
+    '',
+    'A non-streaming response loses its text and tool calls.',
+  ].join('\n'));
+});
+
+test('formatReviewFindings leaves unrelated JSON unchanged', () => {
+  const text = JSON.stringify([{ name: 'ordinary data', value: 1 }]);
+  assert.equal(formatReviewFindings(text), text);
 });

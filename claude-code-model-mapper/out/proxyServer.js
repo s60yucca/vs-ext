@@ -33,24 +33,33 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ProxyServer = void 0;
-exports.buildUpstreamUrl = buildUpstreamUrl;
-exports.extractTextContent = extractTextContent;
-exports.extractDeltaText = extractDeltaText;
-exports.sanitizeVisibleText = sanitizeVisibleText;
-exports.mapStreamingFinishReason = mapStreamingFinishReason;
-exports.anthropicToOpenAI = anthropicToOpenAI;
-exports.openAIChatToResponses = openAIChatToResponses;
+exports.ProxyServer = exports.buildUpstreamUrl = exports.sanitizeVisibleText = exports.formatReviewFindings = exports.extractTextContent = exports.extractDeltaText = exports.mapStreamingFinishReason = exports.openAIChatToResponses = exports.anthropicToOpenAI = void 0;
 const http = __importStar(require("http"));
 const https = __importStar(require("https"));
 const zlib = __importStar(require("zlib"));
 const events_1 = require("events");
 const modelMapper_1 = require("./modelMapper");
-const PROXY_DEBUG_FILE = '/Users/thohoang/Dev/AI/vs-ext/claude-code-model-mapper/proxy_debug.log';
-function generateRequestId() {
-    const hex = (Date.now() ^ (Math.random() * 0xffff | 0)).toString(16).slice(-4);
-    return `req-${hex}`;
-}
+const anthropicRequestAdapter_1 = require("./proxy/anthropicRequestAdapter");
+const debugLogger_1 = require("./proxy/debugLogger");
+const functionCallStore_1 = require("./proxy/functionCallStore");
+const headerBuilder_1 = require("./proxy/headerBuilder");
+const requestSummary_1 = require("./proxy/requestSummary");
+const responsesAdapter_1 = require("./proxy/responsesAdapter");
+const streamingResponseAdapter_1 = require("./proxy/streamingResponseAdapter");
+const urlBuilder_1 = require("./proxy/urlBuilder");
+var anthropicRequestAdapter_2 = require("./proxy/anthropicRequestAdapter");
+Object.defineProperty(exports, "anthropicToOpenAI", { enumerable: true, get: function () { return anthropicRequestAdapter_2.anthropicToOpenAI; } });
+var responsesAdapter_2 = require("./proxy/responsesAdapter");
+Object.defineProperty(exports, "openAIChatToResponses", { enumerable: true, get: function () { return responsesAdapter_2.openAIChatToResponses; } });
+var streamingResponseAdapter_2 = require("./proxy/streamingResponseAdapter");
+Object.defineProperty(exports, "mapStreamingFinishReason", { enumerable: true, get: function () { return streamingResponseAdapter_2.mapStreamingFinishReason; } });
+var textAdapter_1 = require("./proxy/textAdapter");
+Object.defineProperty(exports, "extractDeltaText", { enumerable: true, get: function () { return textAdapter_1.extractDeltaText; } });
+Object.defineProperty(exports, "extractTextContent", { enumerable: true, get: function () { return textAdapter_1.extractTextContent; } });
+Object.defineProperty(exports, "formatReviewFindings", { enumerable: true, get: function () { return textAdapter_1.formatReviewFindings; } });
+Object.defineProperty(exports, "sanitizeVisibleText", { enumerable: true, get: function () { return textAdapter_1.sanitizeVisibleText; } });
+var urlBuilder_2 = require("./proxy/urlBuilder");
+Object.defineProperty(exports, "buildUpstreamUrl", { enumerable: true, get: function () { return urlBuilder_2.buildUpstreamUrl; } });
 class ProxyServer extends events_1.EventEmitter {
     constructor() {
         super(...arguments);
@@ -58,7 +67,8 @@ class ProxyServer extends events_1.EventEmitter {
         this._actualPort = null;
         this._isRunning = false;
         this.restartAttempts = 0;
-        this.MAX_RESTART = 3;
+        this.maxRestartAttempts = 3;
+        this.functionCallStore = new functionCallStore_1.ConversationFunctionCallStore();
         this.modelConfigs = [];
         this.providerConfig = { baseUrl: 'https://openrouter.ai/api/v1' };
         this.apiKey = '';
@@ -69,6 +79,7 @@ class ProxyServer extends events_1.EventEmitter {
         this.modelConfigs = modelConfigs;
         this.providerConfig = providerConfig;
         this.apiKey = apiKey;
+        this.functionCallStore.clear();
     }
     async start(options) {
         const port = await this.tryBind(options.port, options.portRangeEnd);
@@ -93,416 +104,220 @@ class ProxyServer extends events_1.EventEmitter {
     }
     tryBind(port, portRangeEnd) {
         return new Promise((resolve, reject) => {
-            const attempt = (p) => {
-                if (p > portRangeEnd) {
+            const attempt = (candidate) => {
+                if (candidate > portRangeEnd) {
                     reject(new Error(`Không tìm được port trống trong dải ${port}-${portRangeEnd}`));
                     return;
                 }
-                const srv = http.createServer((req, res) => this.handleRequest(req, res));
-                srv.once('error', (err) => {
-                    if (err.code === 'EADDRINUSE') {
-                        attempt(p + 1);
+                const server = http.createServer((req, res) => this.handleRequest(req, res));
+                server.once('error', (error) => {
+                    if (error.code === 'EADDRINUSE') {
+                        attempt(candidate + 1);
                     }
                     else {
-                        reject(err);
+                        reject(error);
                     }
                 });
-                srv.listen(p, '127.0.0.1', () => {
-                    this.server = srv;
-                    this.server.on('error', (err) => this.handleServerError(err, port, portRangeEnd));
-                    resolve(p);
+                server.listen(candidate, '127.0.0.1', () => {
+                    this.server = server;
+                    server.on('error', error => this.handleServerError(error, port, portRangeEnd));
+                    resolve(candidate);
                 });
             };
             attempt(port);
         });
     }
-    handleServerError(err, port, portRangeEnd) {
+    handleServerError(error, port, portRangeEnd) {
         this._isRunning = false;
-        this.emit('error', err);
-        if (this.restartAttempts < this.MAX_RESTART) {
-            this.restartAttempts++;
-            setTimeout(() => {
-                this.tryBind(port, portRangeEnd).then(p => {
-                    this._actualPort = p;
-                    this._isRunning = true;
-                    this.restartAttempts = 0;
-                    this.emit('restarted', p);
-                }).catch(e => this.emit('fatalError', e));
-            }, 1000);
+        this.emit('error', error);
+        if (this.restartAttempts >= this.maxRestartAttempts) {
+            this.emit('fatalError', new Error(`Proxy server crash sau ${this.maxRestartAttempts} lần restart`));
+            return;
         }
-        else {
-            this.emit('fatalError', new Error(`Proxy server crash sau ${this.MAX_RESTART} lần restart`));
-        }
+        this.restartAttempts++;
+        setTimeout(() => {
+            this.tryBind(port, portRangeEnd).then(boundPort => {
+                this._actualPort = boundPort;
+                this._isRunning = true;
+                this.restartAttempts = 0;
+                this.emit('restarted', boundPort);
+            }).catch(bindError => this.emit('fatalError', bindError));
+        }, 1000);
     }
     handleRequest(req, res) {
         const id = generateRequestId();
-        const event = {
+        this.emit('requestEvent', {
             id,
             sourceModel: '',
             targetModel: '',
             status: 'queued',
             startTime: Date.now(),
-        };
-        this.emit('requestEvent', { ...event });
-        // Handle Claude Code's token counting endpoint locally
-        if (req.url?.includes('/messages/count_tokens')) {
-            this.emitUpdate(id, { sourceModel: 'local-token-counter', targetModel: 'local', status: 'processing' });
-            // Mock response for token counting since most OpenAI compatible APIs don't support it directly
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ input_tokens: 0 }));
-            this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
-            return;
-        }
-        // Handle root / healthcheck endpoints locally
-        if (req.url === '/' || req.url === '') {
-            this.emitUpdate(id, { sourceModel: 'local-healthcheck', targetModel: 'local', status: 'processing' });
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ status: 'ok' }));
-            this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
-            return;
-        }
-        let body = '';
-        req.on('data', chunk => { body += chunk; });
-        req.on('end', () => {
-            let parsed = {};
-            if (body.trim()) {
-                try {
-                    parsed = JSON.parse(body);
-                }
-                catch {
-                    res.writeHead(400, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-                    this.emitUpdate(id, { status: 'error', error: 'Invalid JSON body', endTime: Date.now() });
-                    return;
-                }
-            }
-            // Fix for Fireworks AI and strict providers: ALWAYS cap max_tokens to 4096
-            // Fireworks has a hard limit on max_tokens for Anthropic-compatible /v1/messages
-            // and OpenAI format also supports capping to prevent 400 Bad Request
-            if (typeof parsed['max_tokens'] === 'number' && parsed['max_tokens'] > 4096) {
-                parsed['max_tokens'] = 4096;
-            }
-            const sourceModel = parsed['model'] || '';
-            const targetModel = (0, modelMapper_1.resolve)(sourceModel, this.modelConfigs);
-            parsed['model'] = targetModel;
-            this.emitUpdate(id, { sourceModel, targetModel, status: 'processing' });
-            // Convert Anthropic /messages format → OpenAI /chat/completions format
-            const isMessagesEndpoint = (req.url || '').includes('/messages');
-            let rewrittenBody;
-            let rewrittenUrl = req.url || '/';
-            const isStreaming = !!(parsed['stream']);
-            const shouldConvert = isMessagesEndpoint && !this.providerConfig.nativeAnthropic;
-            if (shouldConvert) {
-                parsed = anthropicToOpenAI(parsed);
-                rewrittenUrl = rewrittenUrl.replace('/messages', '/chat/completions').replace(/\?.*$/, '');
-                // Support for OpenAI Responses API (e.g. gpt-5.5) which uses 'input' instead of 'messages'
-                const finalUrl = this.providerConfig.isFullEndpoint
-                    ? this.providerConfig.baseUrl
-                    : buildUpstreamUrl(this.providerConfig.baseUrl, rewrittenUrl).toString();
-                if (finalUrl.includes('/responses')) {
-                    parsed = openAIChatToResponses(parsed);
-                    if (parsed['max_tokens'] !== undefined) {
-                        parsed['max_output_tokens'] = parsed['max_tokens'];
-                        delete parsed['max_tokens'];
-                    }
-                    if (parsed['stream_options'] !== undefined) {
-                        delete parsed['stream_options'];
-                    }
-                    if (Array.isArray(parsed['tools'])) {
-                        parsed['tools'] = parsed['tools'].map((t) => {
-                            if (t.type === 'function' && t.function) {
-                                return {
-                                    type: 'function',
-                                    name: t.function.name,
-                                    description: t.function.description,
-                                    parameters: t.function.parameters
-                                };
-                            }
-                            return t;
-                        });
-                    }
-                    const tc = parsed['tool_choice'];
-                    if (tc && typeof tc === 'object' && tc.type === 'function' && tc.function) {
-                        parsed['tool_choice'] = {
-                            type: 'function',
-                            name: tc.function.name
-                        };
-                    }
-                }
-            }
-            rewrittenBody = JSON.stringify(parsed);
-            this.forwardRequest(req, rewrittenBody, rewrittenUrl, shouldConvert, isStreaming, res, id);
         });
+        if (req.url?.includes('/messages/count_tokens')) {
+            this.sendLocalResponse(res, id, 'local-token-counter', { input_tokens: 0 });
+            return;
+        }
+        if (req.url === '/' || req.url === '') {
+            this.sendLocalResponse(res, id, 'local-healthcheck', { status: 'ok' });
+            return;
+        }
+        let rawBody = '';
+        req.on('data', chunk => { rawBody += chunk; });
+        req.on('end', () => this.processRequestBody(req, res, id, rawBody));
     }
-    forwardRequest(req, body, rewrittenUrl, convertResponse, isStreaming, res, id) {
+    processRequestBody(req, res, id, rawBody) {
+        let body;
+        try {
+            body = rawBody.trim() ? JSON.parse(rawBody) : {};
+        }
+        catch {
+            this.sendError(res, id, 400, 'Invalid JSON body');
+            return;
+        }
+        if (typeof body.max_tokens === 'number' && body.max_tokens > 4096) {
+            body.max_tokens = 4096;
+        }
+        const sourceModel = typeof body.model === 'string' ? body.model : '';
+        const conversationKey = (0, functionCallStore_1.createConversationKey)(body);
+        const targetModel = (0, modelMapper_1.resolve)(sourceModel, this.modelConfigs);
+        body.model = targetModel;
+        this.emitUpdate(id, { sourceModel, targetModel, status: 'processing' });
+        const isStreaming = !!body.stream;
+        const convertResponse = isMessagesRequest(req.url) && !this.providerConfig.nativeAnthropic;
+        let rewrittenUrl = req.url || '/';
+        if (convertResponse) {
+            body = (0, anthropicRequestAdapter_1.anthropicToOpenAI)(body);
+            rewrittenUrl = rewrittenUrl.replace('/messages', '/chat/completions').replace(/\?.*$/, '');
+            const finalUrl = this.providerConfig.isFullEndpoint
+                ? this.providerConfig.baseUrl
+                : (0, urlBuilder_1.buildUpstreamUrl)(this.providerConfig.baseUrl, rewrittenUrl).toString();
+            if ((0, responsesAdapter_1.isResponsesEndpoint)(finalUrl)) {
+                body = (0, responsesAdapter_1.adaptResponsesRequest)((0, responsesAdapter_1.openAIChatToResponses)(body, this.functionCallStore.get(conversationKey)));
+            }
+        }
+        this.forwardRequest(req, JSON.stringify(body), rewrittenUrl, convertResponse, isStreaming, res, id, conversationKey);
+    }
+    forwardRequest(req, body, rewrittenUrl, convertResponse, isStreaming, res, id, conversationKey) {
         const url = this.providerConfig.isFullEndpoint
             ? new URL(this.providerConfig.baseUrl)
-            : buildUpstreamUrl(this.providerConfig.baseUrl, rewrittenUrl);
-        appendProxyDebug(`\n\n--- NEW REQUEST TO: ${url.toString()} ---\n${summarizeOutboundBody(body)}\n`);
+            : (0, urlBuilder_1.buildUpstreamUrl)(this.providerConfig.baseUrl, rewrittenUrl);
+        (0, debugLogger_1.appendProxyDebug)(`\n\n--- NEW REQUEST TO: ${url.toString()} ---\n${(0, requestSummary_1.summarizeOutboundBody)(body)}\n`);
         const isHttps = url.protocol === 'https:';
         const transport = isHttps ? https : http;
-        const headers = {};
-        for (const [k, v] of Object.entries(req.headers)) {
-            const lowerK = k.toLowerCase();
-            if (lowerK === 'host' || lowerK === 'x-api-key' || lowerK.startsWith('anthropic-')) {
-                continue;
-            }
-            if (v) {
-                headers[k] = Array.isArray(v) ? v.join(', ') : v;
-            }
-        }
-        if (this.apiKey) {
-            const authHeader = this.providerConfig.authHeader || 'authorization';
-            const authPrefix = this.providerConfig.authValuePrefix ?? 'Bearer ';
-            headers[authHeader] = authPrefix ? authPrefix + this.apiKey : this.apiKey;
-        }
-        if (convertResponse) {
-            headers['accept-encoding'] = 'identity';
-        }
-        headers['content-length'] = Buffer.byteLength(body).toString();
-        const options = {
+        const headers = (0, headerBuilder_1.buildUpstreamHeaders)(req.headers, this.providerConfig, this.apiKey, Buffer.byteLength(body), convertResponse);
+        const proxyReq = transport.request({
             hostname: url.hostname,
             port: url.port || (isHttps ? 443 : 80),
             path: url.pathname + url.search,
             method: req.method,
             headers,
-            timeout: 120000, // 2 minutes — free models can be slow
-        };
-        const proxyReq = transport.request(options, proxyRes => {
-            const upstream = getDecodedResponseStream(proxyRes);
-            const isError = (proxyRes.statusCode || 200) >= 400;
-            if (isError) {
-                let errBody = '';
-                upstream.on('data', chunk => { errBody += chunk.toString(); });
-                upstream.on('end', () => {
-                    let errMsg = `HTTP ${proxyRes.statusCode} → ${url.toString()}`;
-                    try {
-                        const parsed = JSON.parse(errBody);
-                        errMsg = parsed?.error?.message || parsed?.message || errMsg;
-                    }
-                    catch { /* use status code + url */ }
-                    appendProxyDebug(`--- UPSTREAM ERROR ${proxyRes.statusCode} ---\n${errBody}\n`);
-                    res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
-                    res.end(errBody);
-                    this.emitUpdate(id, { status: 'error', error: errMsg, endTime: Date.now() });
-                });
-            }
-            else {
-                if (convertResponse && isStreaming) {
-                    // Stream: convert OpenAI SSE chunks → Anthropic SSE events
-                    res.writeHead(proxyRes.statusCode || 200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
-                    const fs = require('fs');
-                    const debugFile = PROXY_DEBUG_FILE;
-                    const originalWrite = res.write.bind(res);
-                    res.write = (chunk) => {
-                        fs.appendFileSync(debugFile, `OUT: ${chunk.toString()}`);
-                        return originalWrite(chunk);
-                    };
-                    let buffer = '';
-                    let inputTokens = 0;
-                    let outputTokens = 0;
-                    let sentStart = false;
-                    const sanitizer = new StreamingTextSanitizer();
-                    const toolStates = new Map();
-                    let nextContentBlockIndex = 0;
-                    let textBlockStarted = false;
-                    let textBlockIndex = null;
-                    let finishReason = null;
-                    const model = body ? JSON.parse(body)['model'] || '' : '';
-                    upstream.on('data', (chunkBuffer) => {
-                        const chunkStr = chunkBuffer.toString();
-                        fs.appendFileSync(debugFile, chunkStr);
-                        buffer += chunkStr;
-                        const lines = buffer.split('\n');
-                        buffer = lines.pop() || '';
-                        for (const line of lines) {
-                            if (!line.startsWith('data: ')) {
-                                continue;
-                            }
-                            const data = line.slice(6).trim();
-                            if (data === '[DONE]') {
-                                if (textBlockStarted) {
-                                    res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: textBlockIndex ?? 0 })}\n\n`);
-                                }
-                                for (const toolState of toolStates.values()) {
-                                    if (toolState.started && toolState.blockIndex !== undefined) {
-                                        res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: toolState.blockIndex })}\n\n`);
-                                    }
-                                }
-                                res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: mapStreamingFinishReason(finishReason, hasStartedToolUse(toolStates)), stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
-                                res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
-                                return;
-                            }
-                            try {
-                                const chunk = JSON.parse(data);
-                                if (chunk.usage) {
-                                    inputTokens = chunk.usage.prompt_tokens || 0;
-                                    outputTokens = chunk.usage.completion_tokens || 0;
-                                }
-                                let choice = chunk.choices?.[0];
-                                let delta = choice?.delta;
-                                // Support for Responses API where delta is often a string and type indicates the event
-                                if (!delta && (typeof chunk.delta === 'string' || chunk.type === 'response.output_item.added')) {
-                                    if (chunk.type?.includes('text')) {
-                                        delta = { content: chunk.delta };
-                                    }
-                                    else if (chunk.type === 'response.output_item.added' && chunk.item?.type === 'function_call') {
-                                        delta = {
-                                            tool_calls: [{
-                                                    index: chunk.output_index || 0,
-                                                    id: chunk.item.call_id || chunk.item.id || 'tool_0',
-                                                    function: { name: chunk.item.name, arguments: '' }
-                                                }]
-                                        };
-                                    }
-                                    else if (chunk.type?.includes('function') || chunk.type?.includes('tool')) {
-                                        // Rough approximation for tool call delta
-                                        delta = {
-                                            tool_calls: [{
-                                                    index: chunk.output_index || 0,
-                                                    id: chunk.call_id || chunk.item_id || 'tool_0',
-                                                    function: { arguments: chunk.delta }
-                                                }]
-                                        };
-                                    }
-                                    else {
-                                        delta = { content: chunk.delta || '' };
-                                    }
-                                }
-                                if (choice?.finish_reason) {
-                                    finishReason = choice.finish_reason;
-                                }
-                                else if (chunk.type === 'response.done' || chunk.type === 'response.completed') {
-                                    finishReason = 'stop';
-                                    if (chunk.response?.usage) {
-                                        outputTokens = chunk.response.usage.output_tokens || outputTokens;
-                                    }
-                                    if (textBlockStarted) {
-                                        res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: textBlockIndex ?? 0 })}\n\n`);
-                                    }
-                                    for (const toolState of toolStates.values()) {
-                                        if (toolState.started && toolState.blockIndex !== undefined) {
-                                            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: toolState.blockIndex })}\n\n`);
-                                        }
-                                    }
-                                    res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: mapStreamingFinishReason(finishReason, hasStartedToolUse(toolStates)), stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
-                                    res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
-                                    return;
-                                }
-                                if (!delta) {
-                                    continue;
-                                }
-                                if (!sentStart) {
-                                    sentStart = true;
-                                    res.write(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: chunk.id || 'msg_proxy', type: 'message', role: 'assistant', content: [], model, stop_reason: null, stop_sequence: null, usage: { input_tokens: inputTokens, output_tokens: 0 } } })}\n\n`);
-                                    res.write(`event: ping\ndata: ${JSON.stringify({ type: 'ping' })}\n\n`);
-                                }
-                                const text = sanitizer.push(extractDeltaText(delta));
-                                if (text) {
-                                    if (!textBlockStarted) {
-                                        textBlockStarted = true;
-                                        textBlockIndex = nextContentBlockIndex++;
-                                        res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: textBlockIndex, content_block: { type: 'text', text: '' } })}\n\n`);
-                                    }
-                                    res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: textBlockIndex ?? 0, delta: { type: 'text_delta', text } })}\n\n`);
-                                }
-                                for (const toolCall of extractDeltaToolCalls(delta)) {
-                                    const existing = toolStates.get(toolCall.index) || {
-                                        id: toolCall.id || `toolu_${toolCall.index}`,
-                                        name: toolCall.name || '',
-                                        started: false,
-                                    };
-                                    if (toolCall.id)
-                                        existing.id = toolCall.id;
-                                    if (toolCall.name)
-                                        existing.name = toolCall.name;
-                                    if (!existing.started && existing.name) {
-                                        existing.started = true;
-                                        existing.blockIndex = nextContentBlockIndex++;
-                                        res.write(`event: content_block_start\ndata: ${JSON.stringify({
-                                            type: 'content_block_start',
-                                            index: existing.blockIndex,
-                                            content_block: { type: 'tool_use', id: existing.id, name: existing.name, input: {} },
-                                        })}\n\n`);
-                                    }
-                                    if (existing.started && toolCall.argumentsChunk) {
-                                        res.write(`event: content_block_delta\ndata: ${JSON.stringify({
-                                            type: 'content_block_delta',
-                                            index: existing.blockIndex ?? 0,
-                                            delta: { type: 'input_json_delta', partial_json: toolCall.argumentsChunk },
-                                        })}\n\n`);
-                                    }
-                                    toolStates.set(toolCall.index, existing);
-                                }
-                            }
-                            catch { /* skip malformed chunk */ }
-                        }
-                    });
-                    upstream.on('end', () => {
-                        res.end();
-                        this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
-                    });
-                }
-                else if (convertResponse && !isStreaming) {
-                    // Non-stream: buffer full response, convert to Anthropic format
-                    let respBody = '';
-                    upstream.on('data', (chunk) => { respBody += chunk.toString(); });
-                    upstream.on('end', () => {
-                        try {
-                            const oai = JSON.parse(respBody);
-                            const text = sanitizeVisibleText(extractTextContent(oai.choices?.[0]?.message?.content));
-                            const toolUses = convertToolCallsToAnthropic(oai.choices?.[0]?.message?.tool_calls);
-                            const anthropicResp = {
-                                id: oai.id || 'msg_proxy',
-                                type: 'message',
-                                role: 'assistant',
-                                content: [
-                                    ...(text ? [{ type: 'text', text }] : []),
-                                    ...toolUses,
-                                ],
-                                model: oai.model || '',
-                                stop_reason: mapFinishReason(oai.choices?.[0]?.finish_reason),
-                                stop_sequence: null,
-                                usage: { input_tokens: oai.usage?.prompt_tokens || 0, output_tokens: oai.usage?.completion_tokens || 0 },
-                            };
-                            const out = JSON.stringify(anthropicResp);
-                            res.writeHead(proxyRes.statusCode || 200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(out).toString() });
-                            res.end(out);
-                        }
-                        catch {
-                            res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-                            res.end(respBody);
-                        }
-                        this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
-                    });
-                }
-                else {
-                    res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-                    proxyRes.pipe(res);
-                    proxyRes.on('end', () => {
-                        this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
-                    });
-                }
-            }
-        });
-        proxyReq.on('timeout', () => {
-            proxyReq.destroy(new Error('Read timeout — upstream did not respond in time'));
-        });
-        proxyReq.on('error', err => {
+            timeout: 120000,
+        }, proxyRes => this.handleUpstreamResponse(proxyRes, body, convertResponse, isStreaming, res, id, conversationKey, url));
+        proxyReq.on('timeout', () => proxyReq.destroy(new Error('Read timeout - upstream did not respond in time')));
+        proxyReq.on('error', error => {
             if (!res.headersSent) {
                 res.writeHead(502, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ error: 'Bad Gateway', detail: err.message }));
+                res.end(JSON.stringify({ error: 'Bad Gateway', detail: error.message }));
             }
-            this.emitUpdate(id, { status: 'error', error: err.message, endTime: Date.now() });
+            this.emitUpdate(id, { status: 'error', error: error.message, endTime: Date.now() });
         });
         proxyReq.write(body);
         proxyReq.end();
+    }
+    handleUpstreamResponse(proxyRes, requestBody, convertResponse, isStreaming, res, id, conversationKey, url) {
+        const upstream = getDecodedResponseStream(proxyRes);
+        if ((proxyRes.statusCode || 200) >= 400) {
+            this.forwardUpstreamError(upstream, proxyRes, res, id, url);
+            return;
+        }
+        if (convertResponse && isStreaming) {
+            res.writeHead(proxyRes.statusCode || 200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+            const model = JSON.parse(requestBody).model || '';
+            (0, streamingResponseAdapter_1.streamOpenAIAsAnthropic)(upstream, res, {
+                model,
+                onFunctionCall: item => this.functionCallStore.remember(conversationKey, item),
+            }).then(() => {
+                this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+            }).catch(error => {
+                this.emitUpdate(id, { status: 'error', error: String(error), endTime: Date.now() });
+            });
+            return;
+        }
+        if (convertResponse) {
+            this.forwardNonStreamingResponse(upstream, proxyRes, res, id, conversationKey);
+            return;
+        }
+        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+        proxyRes.pipe(res);
+        proxyRes.on('end', () => this.emitUpdate(id, { status: 'completed', endTime: Date.now() }));
+    }
+    forwardNonStreamingResponse(upstream, proxyRes, res, id, conversationKey) {
+        let responseBody = '';
+        upstream.on('data', chunk => { responseBody += chunk.toString(); });
+        upstream.on('end', () => {
+            try {
+                const parsed = (0, responsesAdapter_1.parseNonStreamingResponse)(JSON.parse(responseBody));
+                parsed.functionCalls.forEach(item => this.functionCallStore.remember(conversationKey, item));
+                const output = JSON.stringify(parsed.message);
+                res.writeHead(proxyRes.statusCode || 200, {
+                    'Content-Type': 'application/json',
+                    'Content-Length': Buffer.byteLength(output).toString(),
+                });
+                res.end(output);
+            }
+            catch {
+                res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+                res.end(responseBody);
+            }
+            this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+        });
+    }
+    forwardUpstreamError(upstream, proxyRes, res, id, url) {
+        let responseBody = '';
+        upstream.on('data', chunk => { responseBody += chunk.toString(); });
+        upstream.on('end', () => {
+            let errorMessage = `HTTP ${proxyRes.statusCode} -> ${url.toString()}`;
+            try {
+                const parsed = JSON.parse(responseBody);
+                errorMessage = parsed?.error?.message || parsed?.message || errorMessage;
+            }
+            catch {
+                // Keep the HTTP status and URL fallback.
+            }
+            (0, debugLogger_1.appendProxyDebug)(`--- UPSTREAM ERROR ${proxyRes.statusCode} ---\n${responseBody}\n`);
+            res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
+            res.end(responseBody);
+            this.emitUpdate(id, { status: 'error', error: errorMessage, endTime: Date.now() });
+        });
+    }
+    sendLocalResponse(res, id, model, body) {
+        this.emitUpdate(id, { sourceModel: model, targetModel: 'local', status: 'processing' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+        this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+    }
+    sendError(res, id, status, message) {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: message }));
+        this.emitUpdate(id, { status: 'error', error: message, endTime: Date.now() });
     }
     emitUpdate(id, update) {
         this.emit('requestUpdate', { id, update });
     }
 }
 exports.ProxyServer = ProxyServer;
+function generateRequestId() {
+    const hex = (Date.now() ^ (Math.random() * 0xffff | 0)).toString(16).slice(-4);
+    return `req-${hex}`;
+}
+function isMessagesRequest(url) {
+    try {
+        return new URL(url || '/', 'http://localhost').pathname.endsWith('/messages');
+    }
+    catch {
+        return false;
+    }
+}
 function getDecodedResponseStream(proxyRes) {
     const encoding = String(proxyRes.headers['content-encoding'] || '').toLowerCase();
     if (encoding.includes('gzip')) {
@@ -515,417 +330,5 @@ function getDecodedResponseStream(proxyRes) {
         return proxyRes.pipe(zlib.createInflate());
     }
     return proxyRes;
-}
-function buildUpstreamUrl(baseUrl, rewrittenUrl) {
-    const base = baseUrl.replace(/\/$/, '');
-    const incomingPath = rewrittenUrl || '/';
-    const reqPath = base.endsWith('/v1') ? incomingPath.replace(/^\/v1/, '') : incomingPath;
-    return new URL(base + reqPath);
-}
-function extractTextContent(content) {
-    if (typeof content === 'string') {
-        return content;
-    }
-    if (Array.isArray(content)) {
-        return content
-            .map(part => {
-            if (typeof part === 'string') {
-                return part;
-            }
-            if (part && typeof part === 'object') {
-                const typedPart = part;
-                if (typedPart.type === 'text' && typeof typedPart.text === 'string') {
-                    return typedPart.text;
-                }
-            }
-            return '';
-        })
-            .filter(Boolean)
-            .join('\n');
-    }
-    return '';
-}
-function extractDeltaText(delta) {
-    if (!delta || typeof delta !== 'object') {
-        return '';
-    }
-    const typedDelta = delta;
-    return extractTextContent(typedDelta.content);
-}
-function sanitizeVisibleText(text) {
-    return new StreamingTextSanitizer().push(text, true).trim();
-}
-class StreamingTextSanitizer {
-    constructor() {
-        this.pending = '';
-        this.hiddenTag = null;
-    }
-    push(input, flush = false) {
-        if (!input && !flush) {
-            return '';
-        }
-        this.pending += input;
-        let output = '';
-        while (this.pending.length > 0) {
-            if (this.hiddenTag) {
-                const closeTag = `</${this.hiddenTag}>`;
-                const closeIndex = this.pending.indexOf(closeTag);
-                if (closeIndex === -1) {
-                    if (flush) {
-                        this.pending = '';
-                        this.hiddenTag = null;
-                    }
-                    break;
-                }
-                this.pending = this.pending.slice(closeIndex + closeTag.length);
-                this.hiddenTag = null;
-                continue;
-            }
-            const openMatch = this.pending.match(/<(think|fast_path|tool_call)>/);
-            if (!openMatch || openMatch.index === undefined) {
-                output += stripStandaloneTags(flush ? this.pending : safeVisiblePrefix(this.pending));
-                this.pending = flush ? '' : this.pending.slice(safeVisiblePrefix(this.pending).length);
-                break;
-            }
-            const openIndex = openMatch.index;
-            const visible = this.pending.slice(0, openIndex);
-            output += stripStandaloneTags(visible);
-            this.pending = this.pending.slice(openIndex + openMatch[0].length);
-            this.hiddenTag = openMatch[1];
-        }
-        return output;
-    }
-}
-function safeVisiblePrefix(text) {
-    const lastOpen = text.lastIndexOf('<');
-    const lastClose = text.lastIndexOf('>');
-    if (lastOpen > lastClose) {
-        return text.slice(0, lastOpen);
-    }
-    return text;
-}
-function stripStandaloneTags(text) {
-    return text.replace(/<\/?(think|fast_path|tool_call)>/g, '');
-}
-function extractDeltaToolCalls(delta) {
-    if (!delta || typeof delta !== 'object') {
-        return [];
-    }
-    const toolCalls = delta.tool_calls;
-    if (!Array.isArray(toolCalls)) {
-        return [];
-    }
-    const result = [];
-    for (const [fallbackIndex, toolCall] of toolCalls.entries()) {
-        if (!toolCall || typeof toolCall !== 'object') {
-            continue;
-        }
-        const typed = toolCall;
-        result.push({
-            index: typeof typed.index === 'number' ? typed.index : fallbackIndex,
-            id: typeof typed.id === 'string' ? typed.id : undefined,
-            name: typeof typed.function?.name === 'string' ? typed.function.name : undefined,
-            argumentsChunk: typeof typed.function?.arguments === 'string' ? typed.function.arguments : undefined,
-        });
-    }
-    return result;
-}
-function convertToolCallsToAnthropic(toolCalls) {
-    if (!Array.isArray(toolCalls)) {
-        return [];
-    }
-    return toolCalls.flatMap((toolCall, index) => {
-        if (!toolCall || typeof toolCall !== 'object') {
-            return [];
-        }
-        const typed = toolCall;
-        const name = typeof typed.function?.name === 'string' ? typed.function.name : '';
-        const rawArguments = typeof typed.function?.arguments === 'string' ? typed.function.arguments : '{}';
-        let input = {};
-        try {
-            input = JSON.parse(rawArguments);
-        }
-        catch {
-            input = {};
-        }
-        return [{
-                type: 'tool_use',
-                id: typeof typed.id === 'string' ? typed.id : `toolu_${index}`,
-                name,
-                input,
-            }];
-    });
-}
-function mapFinishReason(reason) {
-    if (reason === 'stop') {
-        return 'end_turn';
-    }
-    if (reason === 'tool_calls') {
-        return 'tool_use';
-    }
-    return typeof reason === 'string' ? reason : null;
-}
-function mapStreamingFinishReason(reason, hasToolUse) {
-    if (hasToolUse) {
-        return 'tool_use';
-    }
-    return mapFinishReason(reason);
-}
-function hasStartedToolUse(toolStates) {
-    return Array.from(toolStates.values()).some(toolState => toolState.started);
-}
-// Convert Anthropic Messages API body → OpenAI Chat Completions body
-function anthropicToOpenAI(body) {
-    const messages = [];
-    // system prompt → system message
-    if (body['system']) {
-        const sys = body['system'];
-        const text = typeof sys === 'string' ? sys
-            : Array.isArray(sys) ? sys.map(b => b.text || '').join('\n')
-                : String(sys);
-        messages.push({ role: 'system', content: text });
-    }
-    // Anthropic messages → OpenAI messages
-    for (const msg of (body['messages'] || [])) {
-        const content = msg.content;
-        if (typeof content === 'string') {
-            messages.push({ role: msg.role, content });
-        }
-        else if (Array.isArray(content)) {
-            const blocks = content;
-            const text = blocks
-                .filter(b => b.type === 'text')
-                .map(b => b.text || '')
-                .join('\n');
-            if (msg.role === 'assistant') {
-                const toolCalls = blocks
-                    .filter(b => b.type === 'tool_use')
-                    .map((block, index) => ({
-                    id: block.id || `toolu_${index}`,
-                    type: 'function',
-                    function: {
-                        name: block.name || '',
-                        arguments: JSON.stringify(block.input ?? {}),
-                    },
-                }));
-                if (text || toolCalls.length > 0) {
-                    messages.push({ role: 'assistant', content: text || null, tool_calls: toolCalls.length > 0 ? toolCalls : undefined });
-                }
-                continue;
-            }
-            if (msg.role === 'user') {
-                const contentArray = [];
-                if (text)
-                    contentArray.push({ type: 'text', text });
-                const imageBlocks = blocks
-                    .filter(b => b.type === 'image' && b.source)
-                    .map(b => ({
-                    type: 'image_url',
-                    image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` }
-                }));
-                contentArray.push(...imageBlocks);
-                const textBlocks = contentArray.length > 0 ? [{ role: 'user', content: contentArray.length === 1 && contentArray[0].type === 'text' ? text : contentArray }] : [];
-                const toolResults = blocks
-                    .filter(b => b.type === 'tool_result')
-                    .map(block => {
-                    let contentStr = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
-                    // Tích hợp tư tưởng RTK: Auto-truncate massive tool outputs to save tokens
-                    const MAX_LEN = 10000;
-                    if (contentStr.length > MAX_LEN) {
-                        const half = Math.floor(MAX_LEN / 2);
-                        contentStr = contentStr.slice(0, half) +
-                            `\n\n... [PROXY AUTO-TRUNCATED: ${contentStr.length - MAX_LEN} chars removed to save tokens] ...\n\n` +
-                            contentStr.slice(-half);
-                    }
-                    return {
-                        role: 'tool',
-                        tool_call_id: block.tool_use_id || '',
-                        content: block.is_error ? `Error: ${contentStr}` : contentStr,
-                    };
-                });
-                messages.push(...toolResults, ...textBlocks);
-                continue;
-            }
-            messages.push({ role: msg.role, content: text });
-        }
-        else {
-            messages.push({ role: msg.role, content: String(content) });
-        }
-    }
-    const result = {
-        model: body['model'],
-        messages,
-        stream: body['stream'] ?? false,
-    };
-    if (result.stream) {
-        result['stream_options'] = { include_usage: true };
-    }
-    if (body['max_tokens']) {
-        result['max_tokens'] = body['max_tokens'];
-    }
-    if (body['temperature'] !== undefined) {
-        result['temperature'] = body['temperature'];
-    }
-    if (body['top_p'] !== undefined) {
-        result['top_p'] = body['top_p'];
-    }
-    if (body['top_k'] !== undefined) {
-        result['top_k'] = body['top_k'];
-    }
-    if (body['stop_sequences'] && Array.isArray(body['stop_sequences']) && body['stop_sequences'].length > 0) {
-        result['stop'] = body['stop_sequences'];
-    }
-    if (Array.isArray(body['tools'])) {
-        result['tools'] = body['tools'].map(tool => ({
-            type: 'function',
-            function: {
-                name: tool.name || '',
-                description: tool.description || '',
-                parameters: tool.input_schema ?? { type: 'object', properties: {} },
-            },
-        }));
-    }
-    if (body['tool_choice'] && typeof body['tool_choice'] === 'object') {
-        const toolChoice = body['tool_choice'];
-        if (toolChoice.type === 'auto') {
-            result['tool_choice'] = 'auto';
-        }
-        else if (toolChoice.type === 'any') {
-            result['tool_choice'] = 'required';
-        }
-        else if (toolChoice.type === 'tool' && toolChoice.name) {
-            result['tool_choice'] = { type: 'function', function: { name: toolChoice.name } };
-        }
-        if (toolChoice.disable_parallel_tool_use === true) {
-            result['parallel_tool_calls'] = false;
-        }
-    }
-    return result;
-}
-function openAIChatToResponses(body) {
-    const result = { ...body };
-    const messages = result['messages'];
-    if (!Array.isArray(messages)) {
-        return result;
-    }
-    result['input'] = messages.flatMap(message => {
-        if (!message || typeof message !== 'object') {
-            return [];
-        }
-        const typed = message;
-        const role = typeof typed.role === 'string' ? typed.role : 'user';
-        if (role === 'tool') {
-            return [{
-                    type: 'function_call_output',
-                    call_id: typeof typed.tool_call_id === 'string' ? typed.tool_call_id : '',
-                    output: stringifyResponsesOutput(typed.content),
-                }];
-        }
-        const items = [];
-        const content = normalizeResponsesMessageContent(typed.content, role);
-        if (content !== undefined) {
-            items.push({ role, content });
-        }
-        const toolCalls = typed.tool_calls;
-        if (Array.isArray(toolCalls)) {
-            for (const [index, toolCall] of toolCalls.entries()) {
-                const converted = convertChatToolCallToResponses(toolCall, index);
-                if (converted) {
-                    items.push(converted);
-                }
-            }
-        }
-        return items;
-    });
-    delete result['messages'];
-    return result;
-}
-function normalizeResponsesMessageContent(content, role) {
-    if (content === null) {
-        return role === 'assistant' ? undefined : '';
-    }
-    if (!Array.isArray(content)) {
-        return content;
-    }
-    return content.flatMap(part => {
-        if (!part || typeof part !== 'object') {
-            return [];
-        }
-        const typed = part;
-        if (typed.type === 'text' && typeof typed.text === 'string') {
-            return [{ type: role === 'assistant' ? 'output_text' : 'input_text', text: typed.text }];
-        }
-        if (typed.type === 'image_url' && typeof typed.image_url?.url === 'string') {
-            return [{ type: 'input_image', image_url: typed.image_url.url }];
-        }
-        return [part];
-    });
-}
-function stringifyResponsesOutput(content) {
-    if (typeof content === 'string') {
-        return content;
-    }
-    if (content === undefined || content === null) {
-        return '';
-    }
-    return JSON.stringify(content);
-}
-function convertChatToolCallToResponses(toolCall, index) {
-    if (!toolCall || typeof toolCall !== 'object') {
-        return null;
-    }
-    const typed = toolCall;
-    const name = typeof typed.function?.name === 'string' ? typed.function.name : '';
-    const args = typeof typed.function?.arguments === 'string' ? typed.function.arguments : '{}';
-    return {
-        type: 'function_call',
-        call_id: typeof typed.id === 'string' ? typed.id : `toolu_${index}`,
-        name,
-        arguments: args,
-    };
-}
-function appendProxyDebug(message) {
-    try {
-        const fs = require('fs');
-        fs.appendFileSync(PROXY_DEBUG_FILE, message);
-    }
-    catch {
-        // Debug logging must never break proxy traffic.
-    }
-}
-function summarizeOutboundBody(body) {
-    try {
-        const parsed = JSON.parse(body);
-        const input = parsed['input'];
-        const messages = parsed['messages'];
-        const inputItems = Array.isArray(input) ? input : [];
-        const messageItems = Array.isArray(messages) ? messages : [];
-        const inputWithToolCalls = inputItems
-            .map((item, index) => item && typeof item === 'object' && 'tool_calls' in item ? index : -1)
-            .filter(index => index >= 0);
-        const inputTypes = inputItems.map(item => {
-            if (!item || typeof item !== 'object') {
-                return typeof item;
-            }
-            const typed = item;
-            return String(typed.type || typed.role || 'object');
-        });
-        return JSON.stringify({
-            model: parsed['model'],
-            hasMessages: Array.isArray(messages),
-            messageCount: messageItems.length,
-            hasInput: Array.isArray(input),
-            inputCount: inputItems.length,
-            inputTypes,
-            inputWithToolCalls,
-            toolCount: Array.isArray(parsed['tools']) ? parsed['tools'].length : 0,
-            hasMaxTokens: parsed['max_tokens'] !== undefined,
-            hasMaxOutputTokens: parsed['max_output_tokens'] !== undefined,
-            hasStreamOptions: parsed['stream_options'] !== undefined,
-        });
-    }
-    catch {
-        return JSON.stringify({ unparseableBodyBytes: Buffer.byteLength(body) });
-    }
 }
 //# sourceMappingURL=proxyServer.js.map
