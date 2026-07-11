@@ -2,8 +2,15 @@ import * as http from 'http';
 import { appendProxyDebug } from './debugLogger';
 import { mapFinishReason, ResponsesFunctionCallItem } from './responsesAdapter';
 import { extractDeltaText, StreamingVisibleTextAdapter } from './textAdapter';
+import { encodeToolUseId } from './toolCallCodec';
 
-type DeltaToolCall = { index: number; id?: string; name?: string; argumentsChunk?: string };
+type DeltaToolCall = {
+  index?: number;
+  callId?: string;
+  itemId?: string;
+  name?: string;
+  argumentsChunk?: string;
+};
 type ToolState = {
   id: string;
   name: string;
@@ -14,7 +21,6 @@ type ToolState = {
 
 export type StreamingAdapterOptions = {
   model: string;
-  onFunctionCall: (item: ResponsesFunctionCallItem) => void;
 };
 
 export function streamOpenAIAsAnthropic(
@@ -33,9 +39,12 @@ export function streamOpenAIAsAnthropic(
     let finishReason: string | null = null;
     let streamFinalized = false;
     const textAdapter = new StreamingVisibleTextAdapter();
-    const toolStates = new Map<number, ToolState>();
+    const toolStates = new Set<ToolState>();
+    const toolStatesByIndex = new Map<number, ToolState>();
+    const toolStatesById = new Map<string, ToolState>();
 
     const writeEvent = (event: string, data: Record<string, unknown>): void => {
+      if (res.writableEnded) { return; }
       const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
       appendProxyDebug(`OUT: ${payload}`);
       res.write(payload);
@@ -88,9 +97,7 @@ export function streamOpenAIAsAnthropic(
         writeEvent('content_block_stop', { type: 'content_block_stop', index: textBlockIndex ?? 0 });
       }
       for (const toolState of toolStates.values()) {
-        if (toolState.started && toolState.blockIndex !== undefined) {
-          writeEvent('content_block_stop', { type: 'content_block_stop', index: toolState.blockIndex });
-        }
+        emitToolState(toolState);
       }
       writeEvent('message_delta', {
         type: 'message_delta',
@@ -101,6 +108,41 @@ export function streamOpenAIAsAnthropic(
         usage: { output_tokens: outputTokens },
       });
       writeEvent('message_stop', { type: 'message_stop' });
+    };
+
+    const emitToolState = (state: ToolState): void => {
+      if (state.started || !state.name) { return; }
+      ensureMessageStart();
+      state.started = true;
+      state.blockIndex = nextContentBlockIndex++;
+      const functionCall: ResponsesFunctionCallItem = {
+        type: 'function_call',
+        call_id: state.id,
+        name: state.name,
+        arguments: state.arguments || '{}',
+      };
+      writeEvent('content_block_start', {
+        type: 'content_block_start',
+        index: state.blockIndex,
+        content_block: { type: 'tool_use', id: encodeToolUseId(functionCall), name: state.name, input: {} },
+      });
+      writeEvent('content_block_delta', {
+        type: 'content_block_delta',
+        index: state.blockIndex,
+        delta: { type: 'input_json_delta', partial_json: functionCall.arguments },
+      });
+      writeEvent('content_block_stop', { type: 'content_block_stop', index: state.blockIndex });
+    };
+
+    const abort = (error: Error): void => {
+      if (streamFinalized) { return; }
+      streamFinalized = true;
+      writeEvent('error', {
+        type: 'error',
+        error: { type: 'api_error', message: error.message },
+      });
+      res.end();
+      reject(error);
     };
 
     upstream.on('data', (chunkBuffer: Buffer | string) => {
@@ -129,7 +171,7 @@ export function streamOpenAIAsAnthropic(
       res.end();
       resolve();
     });
-    upstream.on('error', reject);
+    upstream.on('error', error => abort(error instanceof Error ? error : new Error(String(error))));
 
     function processUpstreamEvent(chunk: Record<string, any>): void {
       if (chunk.usage) {
@@ -144,8 +186,10 @@ export function streamOpenAIAsAnthropic(
 
       if (choice?.finish_reason) {
         finishReason = choice.finish_reason;
-      } else if (chunk.type === 'response.done' || chunk.type === 'response.completed') {
-        finishReason = 'stop';
+      } else if (chunk.type === 'response.done' || chunk.type === 'response.completed' || chunk.type === 'response.incomplete') {
+        finishReason = chunk.type === 'response.incomplete'
+          ? chunk.response?.incomplete_details?.reason || 'max_output_tokens'
+          : 'stop';
         outputTokens = chunk.response?.usage?.output_tokens ?? outputTokens;
         finish();
         return;
@@ -155,41 +199,32 @@ export function streamOpenAIAsAnthropic(
       ensureMessageStart(chunk.id || 'msg_proxy');
       emitText(textAdapter.push(extractDeltaText(delta)));
       for (const toolCall of extractDeltaToolCalls(delta)) {
-        const state = toolStates.get(toolCall.index) || {
-          id: toolCall.id || `toolu_${toolCall.index}`,
-          name: toolCall.name || '',
-          arguments: '',
-          started: false,
-        };
-        if (toolCall.id) { state.id = toolCall.id; }
+        const state = resolveToolState(toolCall);
         if (toolCall.name) { state.name = toolCall.name; }
-        if (!state.started && state.name) {
-          state.started = true;
-          state.blockIndex = nextContentBlockIndex++;
-          writeEvent('content_block_start', {
-            type: 'content_block_start',
-            index: state.blockIndex,
-            content_block: { type: 'tool_use', id: state.id, name: state.name, input: {} },
-          });
-        }
-        if (state.started && toolCall.argumentsChunk) {
+        if (toolCall.argumentsChunk) {
           state.arguments += toolCall.argumentsChunk;
-          writeEvent('content_block_delta', {
-            type: 'content_block_delta',
-            index: state.blockIndex ?? 0,
-            delta: { type: 'input_json_delta', partial_json: toolCall.argumentsChunk },
-          });
         }
-        if (state.started && state.id && state.name) {
-          options.onFunctionCall({
-            type: 'function_call',
-            call_id: state.id,
-            name: state.name,
-            arguments: state.arguments || '{}',
-          });
-        }
-        toolStates.set(toolCall.index, state);
       }
+    }
+
+    function resolveToolState(toolCall: DeltaToolCall): ToolState {
+      const existing = (toolCall.itemId ? toolStatesById.get(toolCall.itemId) : undefined)
+        || (toolCall.callId ? toolStatesById.get(toolCall.callId) : undefined)
+        || (toolCall.index !== undefined ? toolStatesByIndex.get(toolCall.index) : undefined);
+      const state = existing || {
+        id: toolCall.callId || toolCall.itemId || `toolu_${toolCall.index ?? toolStates.size}`,
+        name: '',
+        arguments: '',
+        started: false,
+      };
+      if (!state.started && toolCall.callId) {
+        state.id = toolCall.callId;
+      }
+      toolStates.add(state);
+      if (toolCall.index !== undefined) { toolStatesByIndex.set(toolCall.index, state); }
+      if (toolCall.callId) { toolStatesById.set(toolCall.callId, state); }
+      if (toolCall.itemId) { toolStatesById.set(toolCall.itemId, state); }
+      return state;
     }
   });
 }
@@ -201,8 +236,9 @@ function responsesEventToDelta(chunk: Record<string, any>): Record<string, unkno
   if (chunk.type === 'response.output_item.added' && chunk.item?.type === 'function_call') {
     return {
       tool_calls: [{
-        index: chunk.output_index || 0,
-        id: chunk.item.call_id || chunk.item.id || 'tool_0',
+        index: typeof chunk.output_index === 'number' ? chunk.output_index : undefined,
+        id: chunk.item.call_id,
+        item_id: chunk.item.id,
         function: { name: chunk.item.name, arguments: '' },
       }],
     };
@@ -210,8 +246,9 @@ function responsesEventToDelta(chunk: Record<string, any>): Record<string, unkno
   if (chunk.type?.includes('function') || chunk.type?.includes('tool')) {
     return {
       tool_calls: [{
-        index: chunk.output_index || 0,
-        id: chunk.call_id || chunk.item_id || 'tool_0',
+        index: typeof chunk.output_index === 'number' ? chunk.output_index : undefined,
+        id: chunk.call_id,
+        item_id: chunk.item_id,
         function: { arguments: chunk.delta },
       }],
     };
@@ -227,18 +264,20 @@ function extractDeltaToolCalls(delta: unknown): DeltaToolCall[] {
   if (!Array.isArray(toolCalls)) {
     return [];
   }
-  return toolCalls.flatMap((toolCall, fallbackIndex) => {
+  return toolCalls.flatMap(toolCall => {
     if (!toolCall || typeof toolCall !== 'object') {
       return [];
     }
     const typed = toolCall as {
       index?: unknown;
       id?: unknown;
+      item_id?: unknown;
       function?: { name?: unknown; arguments?: unknown };
     };
     return [{
-      index: typeof typed.index === 'number' ? typed.index : fallbackIndex,
-      id: typeof typed.id === 'string' ? typed.id : undefined,
+      index: typeof typed.index === 'number' ? typed.index : undefined,
+      callId: typeof typed.id === 'string' ? typed.id : undefined,
+      itemId: typeof typed.item_id === 'string' ? typed.item_id : undefined,
       name: typeof typed.function?.name === 'string' ? typed.function.name : undefined,
       argumentsChunk: typeof typed.function?.arguments === 'string' ? typed.function.arguments : undefined,
     }];
@@ -249,7 +288,6 @@ export function mapStreamingFinishReason(reason: unknown, hasToolUse: boolean): 
   return hasToolUse ? 'tool_use' : mapFinishReason(reason);
 }
 
-function hasStartedToolUse(toolStates: Map<number, { started: boolean }>): boolean {
-  return Array.from(toolStates.values()).some(toolState => toolState.started);
+function hasStartedToolUse(toolStates: Iterable<{ started: boolean }>): boolean {
+  return Array.from(toolStates).some(toolState => toolState.started);
 }
-

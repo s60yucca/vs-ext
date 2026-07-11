@@ -66,43 +66,9 @@ export function formatReviewFindings(text: string): string {
 
 export class StreamingVisibleTextAdapter {
   private readonly sanitizer = new StreamingTextSanitizer();
-  private pending = '';
-  private mode: 'detecting' | 'review' | 'passthrough' = 'detecting';
 
   push(input: string, flush = false): string {
-    const visible = this.sanitizer.push(input, flush);
-    if (this.mode === 'passthrough') {
-      return visible;
-    }
-    this.pending += visible;
-    if (flush) {
-      const output = formatReviewFindings(this.pending);
-      this.pending = '';
-      return output;
-    }
-
-    const trimmed = this.pending.trimStart();
-    if (!trimmed) {
-      return '';
-    }
-    if (!trimmed.startsWith('[')) {
-      return this.startPassthrough();
-    }
-    if (looksLikeReviewFindings(this.pending)) {
-      this.mode = 'review';
-      return '';
-    }
-    if (this.pending.length >= 2048) {
-      return this.startPassthrough();
-    }
-    return '';
-  }
-
-  private startPassthrough(): string {
-    this.mode = 'passthrough';
-    const output = this.pending;
-    this.pending = '';
-    return output;
+    return this.sanitizer.push(input, flush);
   }
 }
 
@@ -158,13 +124,6 @@ function isReviewFinding(value: unknown): value is ReviewFinding {
     && typeof finding.failure_scenario === 'string';
 }
 
-function looksLikeReviewFindings(text: string): boolean {
-  return text.includes('"file"')
-    && text.includes('"line"')
-    && text.includes('"summary"')
-    && text.includes('"failure_scenario"');
-}
-
 function safeVisiblePrefix(text: string): string {
   const lastOpen = text.lastIndexOf('<');
   const lastClose = text.lastIndexOf('>');
@@ -174,4 +133,3 @@ function safeVisiblePrefix(text: string): string {
 function stripStandaloneTags(text: string): string {
   return text.replace(/<\/?(think|fast_path|tool_call)>/g, '');
 }
-

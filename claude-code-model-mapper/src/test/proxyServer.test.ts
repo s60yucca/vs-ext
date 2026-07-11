@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { anthropicToOpenAI, buildUpstreamUrl, extractDeltaText, extractTextContent, formatReviewFindings, mapStreamingFinishReason, openAIChatToResponses, sanitizeVisibleText } from '../proxyServer';
+import { encodeToolUseId } from '../proxy/toolCallCodec';
 
 test('buildUpstreamUrl keeps /v1 when provider base url has no version suffix', () => {
   const url = buildUpstreamUrl('https://api.openadapter.in', '/v1/chat/completions');
@@ -155,31 +156,24 @@ test('openAIChatToResponses converts chat tool calls into Responses input items'
   });
 });
 
-test('openAIChatToResponses injects remembered function calls before orphaned tool outputs', () => {
-  const converted = openAIChatToResponses(
-    {
+test('openAIChatToResponses restores function calls from encoded orphan tool outputs', () => {
+  const toolUseId = encodeToolUseId({
+    type: 'function_call',
+    call_id: 'call_todo_1',
+    name: 'TodoWrite',
+    arguments: JSON.stringify({ todos: [] }),
+  });
+  const converted = openAIChatToResponses({
       model: 'gpt-5.5',
       messages: [
         {
           role: 'tool',
-          tool_call_id: 'call_todo_1',
+          tool_call_id: toolUseId,
           content: JSON.stringify({ ok: true }),
         },
         { role: 'user', content: 'Continue' },
       ],
-    },
-    new Map([
-      [
-        'call_todo_1',
-        {
-          type: 'function_call',
-          call_id: 'call_todo_1',
-          name: 'TodoWrite',
-          arguments: JSON.stringify({ todos: [] }),
-        },
-      ],
-    ])
-  );
+    });
 
   assert.deepEqual(converted, {
     model: 'gpt-5.5',

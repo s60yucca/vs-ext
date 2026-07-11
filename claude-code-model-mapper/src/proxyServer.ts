@@ -6,9 +6,9 @@ import { resolve as resolveModel } from './modelMapper';
 import { ModelConfig, LMProviderConfig, ProxyServerOptions, RequestEvent } from './types';
 import { anthropicToOpenAI } from './proxy/anthropicRequestAdapter';
 import { appendProxyDebug } from './proxy/debugLogger';
-import { ConversationFunctionCallStore, createConversationKey } from './proxy/functionCallStore';
 import { buildUpstreamHeaders } from './proxy/headerBuilder';
 import { summarizeOutboundBody } from './proxy/requestSummary';
+import { buildDecodedResponseHeaders } from './proxy/responseHeaders';
 import { adaptResponsesRequest, isResponsesEndpoint, openAIChatToResponses, parseNonStreamingResponse } from './proxy/responsesAdapter';
 import { streamOpenAIAsAnthropic } from './proxy/streamingResponseAdapter';
 import { buildUpstreamUrl } from './proxy/urlBuilder';
@@ -25,7 +25,6 @@ export class ProxyServer extends EventEmitter {
   private _isRunning = false;
   private restartAttempts = 0;
   private readonly maxRestartAttempts = 3;
-  private readonly functionCallStore = new ConversationFunctionCallStore();
   private modelConfigs: ModelConfig[] = [];
   private providerConfig: LMProviderConfig = { baseUrl: 'https://openrouter.ai/api/v1' };
   private apiKey = '';
@@ -37,7 +36,6 @@ export class ProxyServer extends EventEmitter {
     this.modelConfigs = modelConfigs;
     this.providerConfig = providerConfig;
     this.apiKey = apiKey;
-    this.functionCallStore.clear();
   }
 
   async start(options: ProxyServerOptions): Promise<number> {
@@ -144,11 +142,11 @@ export class ProxyServer extends EventEmitter {
       return;
     }
 
-    if (typeof body.max_tokens === 'number' && body.max_tokens > 4096) {
+    const requestedMaxTokens = body.max_tokens;
+    if (typeof requestedMaxTokens === 'number' && requestedMaxTokens > 4096) {
       body.max_tokens = 4096;
     }
     const sourceModel = typeof body.model === 'string' ? body.model : '';
-    const conversationKey = createConversationKey(body);
     const targetModel = resolveModel(sourceModel, this.modelConfigs);
     body.model = targetModel;
     this.emitUpdate(id, { sourceModel, targetModel, status: 'processing' });
@@ -163,10 +161,13 @@ export class ProxyServer extends EventEmitter {
         ? this.providerConfig.baseUrl
         : buildUpstreamUrl(this.providerConfig.baseUrl, rewrittenUrl).toString();
       if (isResponsesEndpoint(finalUrl)) {
-        body = adaptResponsesRequest(openAIChatToResponses(body, this.functionCallStore.get(conversationKey)));
+        if (typeof requestedMaxTokens === 'number') {
+          body.max_tokens = requestedMaxTokens;
+        }
+        body = adaptResponsesRequest(openAIChatToResponses(body));
       }
     }
-    this.forwardRequest(req, JSON.stringify(body), rewrittenUrl, convertResponse, isStreaming, res, id, conversationKey);
+    this.forwardRequest(req, JSON.stringify(body), rewrittenUrl, convertResponse, isStreaming, res, id);
   }
 
   private forwardRequest(
@@ -176,8 +177,7 @@ export class ProxyServer extends EventEmitter {
     convertResponse: boolean,
     isStreaming: boolean,
     res: http.ServerResponse,
-    id: string,
-    conversationKey: string
+    id: string
   ): void {
     const url = this.providerConfig.isFullEndpoint
       ? new URL(this.providerConfig.baseUrl)
@@ -199,7 +199,7 @@ export class ProxyServer extends EventEmitter {
       method: req.method,
       headers,
       timeout: 120_000,
-    }, proxyRes => this.handleUpstreamResponse(proxyRes, body, convertResponse, isStreaming, res, id, conversationKey, url));
+    }, proxyRes => this.handleUpstreamResponse(proxyRes, body, convertResponse, isStreaming, res, id, url));
 
     proxyReq.on('timeout', () => proxyReq.destroy(new Error('Read timeout - upstream did not respond in time')));
     proxyReq.on('error', error => {
@@ -220,7 +220,6 @@ export class ProxyServer extends EventEmitter {
     isStreaming: boolean,
     res: http.ServerResponse,
     id: string,
-    conversationKey: string,
     url: URL
   ): void {
     const upstream = getDecodedResponseStream(proxyRes);
@@ -231,10 +230,7 @@ export class ProxyServer extends EventEmitter {
     if (convertResponse && isStreaming) {
       res.writeHead(proxyRes.statusCode || 200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
       const model = (JSON.parse(requestBody).model as string) || '';
-      streamOpenAIAsAnthropic(upstream, res, {
-        model,
-        onFunctionCall: item => this.functionCallStore.remember(conversationKey, item),
-      }).then(() => {
+      streamOpenAIAsAnthropic(upstream, res, { model }).then(() => {
         this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
       }).catch(error => {
         this.emitUpdate(id, { status: 'error', error: String(error), endTime: Date.now() });
@@ -242,7 +238,7 @@ export class ProxyServer extends EventEmitter {
       return;
     }
     if (convertResponse) {
-      this.forwardNonStreamingResponse(upstream, proxyRes, res, id, conversationKey);
+      this.forwardNonStreamingResponse(upstream, proxyRes, res, id);
       return;
     }
     res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
@@ -254,15 +250,13 @@ export class ProxyServer extends EventEmitter {
     upstream: NodeJS.ReadableStream,
     proxyRes: http.IncomingMessage,
     res: http.ServerResponse,
-    id: string,
-    conversationKey: string
+    id: string
   ): void {
     let responseBody = '';
     upstream.on('data', chunk => { responseBody += chunk.toString(); });
     upstream.on('end', () => {
       try {
         const parsed = parseNonStreamingResponse(JSON.parse(responseBody));
-        parsed.functionCalls.forEach(item => this.functionCallStore.remember(conversationKey, item));
         const output = JSON.stringify(parsed.message);
         res.writeHead(proxyRes.statusCode || 200, {
           'Content-Type': 'application/json',
@@ -270,7 +264,7 @@ export class ProxyServer extends EventEmitter {
         });
         res.end(output);
       } catch {
-        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+        res.writeHead(proxyRes.statusCode || 200, buildDecodedResponseHeaders(proxyRes.headers, responseBody));
         res.end(responseBody);
       }
       this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
@@ -295,7 +289,7 @@ export class ProxyServer extends EventEmitter {
         // Keep the HTTP status and URL fallback.
       }
       appendProxyDebug(`--- UPSTREAM ERROR ${proxyRes.statusCode} ---\n${responseBody}\n`);
-      res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
+      res.writeHead(proxyRes.statusCode || 500, buildDecodedResponseHeaders(proxyRes.headers, responseBody));
       res.end(responseBody);
       this.emitUpdate(id, { status: 'error', error: errorMessage, endTime: Date.now() });
     });

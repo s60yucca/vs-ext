@@ -11,7 +11,6 @@ export declare class ProxyServer extends EventEmitter {
     private _isRunning;
     private restartAttempts;
     private readonly maxRestartAttempts;
-    private readonly functionCallStore;
     private modelConfigs;
     private providerConfig;
     private apiKey;

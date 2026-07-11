@@ -41,9 +41,9 @@ const events_1 = require("events");
 const modelMapper_1 = require("./modelMapper");
 const anthropicRequestAdapter_1 = require("./proxy/anthropicRequestAdapter");
 const debugLogger_1 = require("./proxy/debugLogger");
-const functionCallStore_1 = require("./proxy/functionCallStore");
 const headerBuilder_1 = require("./proxy/headerBuilder");
 const requestSummary_1 = require("./proxy/requestSummary");
+const responseHeaders_1 = require("./proxy/responseHeaders");
 const responsesAdapter_1 = require("./proxy/responsesAdapter");
 const streamingResponseAdapter_1 = require("./proxy/streamingResponseAdapter");
 const urlBuilder_1 = require("./proxy/urlBuilder");
@@ -68,7 +68,6 @@ class ProxyServer extends events_1.EventEmitter {
         this._isRunning = false;
         this.restartAttempts = 0;
         this.maxRestartAttempts = 3;
-        this.functionCallStore = new functionCallStore_1.ConversationFunctionCallStore();
         this.modelConfigs = [];
         this.providerConfig = { baseUrl: 'https://openrouter.ai/api/v1' };
         this.apiKey = '';
@@ -79,7 +78,6 @@ class ProxyServer extends events_1.EventEmitter {
         this.modelConfigs = modelConfigs;
         this.providerConfig = providerConfig;
         this.apiKey = apiKey;
-        this.functionCallStore.clear();
     }
     async start(options) {
         const port = await this.tryBind(options.port, options.portRangeEnd);
@@ -174,11 +172,11 @@ class ProxyServer extends events_1.EventEmitter {
             this.sendError(res, id, 400, 'Invalid JSON body');
             return;
         }
-        if (typeof body.max_tokens === 'number' && body.max_tokens > 4096) {
+        const requestedMaxTokens = body.max_tokens;
+        if (typeof requestedMaxTokens === 'number' && requestedMaxTokens > 4096) {
             body.max_tokens = 4096;
         }
         const sourceModel = typeof body.model === 'string' ? body.model : '';
-        const conversationKey = (0, functionCallStore_1.createConversationKey)(body);
         const targetModel = (0, modelMapper_1.resolve)(sourceModel, this.modelConfigs);
         body.model = targetModel;
         this.emitUpdate(id, { sourceModel, targetModel, status: 'processing' });
@@ -192,12 +190,15 @@ class ProxyServer extends events_1.EventEmitter {
                 ? this.providerConfig.baseUrl
                 : (0, urlBuilder_1.buildUpstreamUrl)(this.providerConfig.baseUrl, rewrittenUrl).toString();
             if ((0, responsesAdapter_1.isResponsesEndpoint)(finalUrl)) {
-                body = (0, responsesAdapter_1.adaptResponsesRequest)((0, responsesAdapter_1.openAIChatToResponses)(body, this.functionCallStore.get(conversationKey)));
+                if (typeof requestedMaxTokens === 'number') {
+                    body.max_tokens = requestedMaxTokens;
+                }
+                body = (0, responsesAdapter_1.adaptResponsesRequest)((0, responsesAdapter_1.openAIChatToResponses)(body));
             }
         }
-        this.forwardRequest(req, JSON.stringify(body), rewrittenUrl, convertResponse, isStreaming, res, id, conversationKey);
+        this.forwardRequest(req, JSON.stringify(body), rewrittenUrl, convertResponse, isStreaming, res, id);
     }
-    forwardRequest(req, body, rewrittenUrl, convertResponse, isStreaming, res, id, conversationKey) {
+    forwardRequest(req, body, rewrittenUrl, convertResponse, isStreaming, res, id) {
         const url = this.providerConfig.isFullEndpoint
             ? new URL(this.providerConfig.baseUrl)
             : (0, urlBuilder_1.buildUpstreamUrl)(this.providerConfig.baseUrl, rewrittenUrl);
@@ -212,7 +213,7 @@ class ProxyServer extends events_1.EventEmitter {
             method: req.method,
             headers,
             timeout: 120000,
-        }, proxyRes => this.handleUpstreamResponse(proxyRes, body, convertResponse, isStreaming, res, id, conversationKey, url));
+        }, proxyRes => this.handleUpstreamResponse(proxyRes, body, convertResponse, isStreaming, res, id, url));
         proxyReq.on('timeout', () => proxyReq.destroy(new Error('Read timeout - upstream did not respond in time')));
         proxyReq.on('error', error => {
             if (!res.headersSent) {
@@ -224,7 +225,7 @@ class ProxyServer extends events_1.EventEmitter {
         proxyReq.write(body);
         proxyReq.end();
     }
-    handleUpstreamResponse(proxyRes, requestBody, convertResponse, isStreaming, res, id, conversationKey, url) {
+    handleUpstreamResponse(proxyRes, requestBody, convertResponse, isStreaming, res, id, url) {
         const upstream = getDecodedResponseStream(proxyRes);
         if ((proxyRes.statusCode || 200) >= 400) {
             this.forwardUpstreamError(upstream, proxyRes, res, id, url);
@@ -233,10 +234,7 @@ class ProxyServer extends events_1.EventEmitter {
         if (convertResponse && isStreaming) {
             res.writeHead(proxyRes.statusCode || 200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
             const model = JSON.parse(requestBody).model || '';
-            (0, streamingResponseAdapter_1.streamOpenAIAsAnthropic)(upstream, res, {
-                model,
-                onFunctionCall: item => this.functionCallStore.remember(conversationKey, item),
-            }).then(() => {
+            (0, streamingResponseAdapter_1.streamOpenAIAsAnthropic)(upstream, res, { model }).then(() => {
                 this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
             }).catch(error => {
                 this.emitUpdate(id, { status: 'error', error: String(error), endTime: Date.now() });
@@ -244,20 +242,19 @@ class ProxyServer extends events_1.EventEmitter {
             return;
         }
         if (convertResponse) {
-            this.forwardNonStreamingResponse(upstream, proxyRes, res, id, conversationKey);
+            this.forwardNonStreamingResponse(upstream, proxyRes, res, id);
             return;
         }
         res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
         proxyRes.pipe(res);
         proxyRes.on('end', () => this.emitUpdate(id, { status: 'completed', endTime: Date.now() }));
     }
-    forwardNonStreamingResponse(upstream, proxyRes, res, id, conversationKey) {
+    forwardNonStreamingResponse(upstream, proxyRes, res, id) {
         let responseBody = '';
         upstream.on('data', chunk => { responseBody += chunk.toString(); });
         upstream.on('end', () => {
             try {
                 const parsed = (0, responsesAdapter_1.parseNonStreamingResponse)(JSON.parse(responseBody));
-                parsed.functionCalls.forEach(item => this.functionCallStore.remember(conversationKey, item));
                 const output = JSON.stringify(parsed.message);
                 res.writeHead(proxyRes.statusCode || 200, {
                     'Content-Type': 'application/json',
@@ -266,7 +263,7 @@ class ProxyServer extends events_1.EventEmitter {
                 res.end(output);
             }
             catch {
-                res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+                res.writeHead(proxyRes.statusCode || 200, (0, responseHeaders_1.buildDecodedResponseHeaders)(proxyRes.headers, responseBody));
                 res.end(responseBody);
             }
             this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
@@ -285,7 +282,7 @@ class ProxyServer extends events_1.EventEmitter {
                 // Keep the HTTP status and URL fallback.
             }
             (0, debugLogger_1.appendProxyDebug)(`--- UPSTREAM ERROR ${proxyRes.statusCode} ---\n${responseBody}\n`);
-            res.writeHead(proxyRes.statusCode || 500, proxyRes.headers);
+            res.writeHead(proxyRes.statusCode || 500, (0, responseHeaders_1.buildDecodedResponseHeaders)(proxyRes.headers, responseBody));
             res.end(responseBody);
             this.emitUpdate(id, { status: 'error', error: errorMessage, endTime: Date.now() });
         });

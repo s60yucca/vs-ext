@@ -1,4 +1,5 @@
-import { extractTextContent, formatReviewFindings, sanitizeVisibleText } from './textAdapter';
+import { extractTextContent, sanitizeVisibleText } from './textAdapter';
+import { decodeToolUseId, encodeToolUseId } from './toolCallCodec';
 
 export type ResponsesFunctionCallItem = {
   type: 'function_call';
@@ -27,8 +28,7 @@ export function isResponsesEndpoint(url: string): boolean {
 }
 
 export function openAIChatToResponses(
-  body: Record<string, unknown>,
-  knownFunctionCalls: ReadonlyMap<string, ResponsesFunctionCallItem> = new Map()
+  body: Record<string, unknown>
 ): Record<string, unknown> {
   const result: Record<string, unknown> = { ...body };
   const messages = result.messages;
@@ -44,12 +44,13 @@ export function openAIChatToResponses(
     const typed = message as { role?: unknown; content?: unknown; tool_calls?: unknown; tool_call_id?: unknown };
     const role = typeof typed.role === 'string' ? typed.role : 'user';
     if (role === 'tool') {
-      const callId = typeof typed.tool_call_id === 'string' ? typed.tool_call_id : '';
+      const toolUseId = typeof typed.tool_call_id === 'string' ? typed.tool_call_id : '';
+      const encodedFunctionCall = decodeToolUseId(toolUseId);
+      const callId = encodedFunctionCall?.call_id || toolUseId;
       const output = { type: 'function_call_output', call_id: callId, output: stringifyOutput(typed.content) };
-      const knownFunctionCall = callId ? knownFunctionCalls.get(callId) : undefined;
-      if (knownFunctionCall && !seenFunctionCallIds.has(callId)) {
+      if (encodedFunctionCall && !seenFunctionCallIds.has(callId)) {
         seenFunctionCallIds.add(callId);
-        return [knownFunctionCall, output];
+        return [encodedFunctionCall, output];
       }
       return [output];
     }
@@ -81,6 +82,8 @@ export function adaptResponsesRequest(body: Record<string, unknown>): Record<str
     delete result.max_tokens;
   }
   delete result.stream_options;
+  delete result.stop;
+  delete result.top_k;
   if (Array.isArray(result.tools)) {
     result.tools = result.tools.map(tool => {
       const typed = tool as { type?: unknown; function?: Record<string, unknown> };
@@ -106,7 +109,7 @@ export function parseNonStreamingResponse(payload: Record<string, any>): {
   message: AnthropicMessageResponse;
   functionCalls: ResponsesFunctionCallItem[];
 } {
-  if (Array.isArray(payload.output)) {
+  if (Array.isArray(payload.output) || typeof payload.output_text === 'string' || payload.object === 'response') {
     return parseResponsesApiResponse(payload);
   }
   return parseChatCompletionsResponse(payload);
@@ -116,14 +119,17 @@ function parseResponsesApiResponse(payload: Record<string, any>): {
   message: AnthropicMessageResponse;
   functionCalls: ResponsesFunctionCallItem[];
 } {
-  const output = payload.output as Array<Record<string, any>>;
-  const text = output
+  const output = Array.isArray(payload.output) ? payload.output as Array<Record<string, any>> : [];
+  const nestedText = output
     .filter(item => item.type === 'message')
     .flatMap(item => Array.isArray(item.content) ? item.content : [])
     .filter(part => part?.type === 'output_text' || part?.type === 'text')
     .map(part => typeof part.text === 'string' ? part.text : '')
     .filter(Boolean)
     .join('\n');
+  const text = typeof payload.output_text === 'string' && payload.output_text
+    ? payload.output_text
+    : nestedText;
   const functionCalls = output
     .filter(item => item.type === 'function_call')
     .map((item, index) => ({
@@ -134,7 +140,7 @@ function parseResponsesApiResponse(payload: Record<string, any>): {
     }));
   const toolUses = functionCalls.map(call => ({
     type: 'tool_use',
-    id: call.call_id,
+    id: encodeToolUseId(call),
     name: call.name,
     input: parseArguments(call.arguments),
   }));
@@ -158,7 +164,7 @@ function parseChatCompletionsResponse(payload: Record<string, any>): {
   }));
   const toolUses = functionCalls.map(call => ({
     type: 'tool_use',
-    id: call.call_id,
+    id: encodeToolUseId(call),
     name: call.name,
     input: parseArguments(call.arguments),
   }));
@@ -179,7 +185,7 @@ function buildAnthropicMessage(
   toolUses: Array<Record<string, unknown>>,
   stopReason: string | null
 ): AnthropicMessageResponse {
-  const text = formatReviewFindings(sanitizeVisibleText(rawText));
+  const text = sanitizeVisibleText(rawText);
   return {
     id: payload.id || 'msg_proxy',
     type: 'message',
@@ -222,11 +228,12 @@ function convertChatToolCall(toolCall: unknown, index: number): ResponsesFunctio
     return null;
   }
   const typed = toolCall as { id?: unknown; function?: { name?: unknown; arguments?: unknown } };
+  const encoded = typeof typed.id === 'string' ? decodeToolUseId(typed.id) : null;
   return {
     type: 'function_call',
-    call_id: typeof typed.id === 'string' ? typed.id : `toolu_${index}`,
-    name: typeof typed.function?.name === 'string' ? typed.function.name : '',
-    arguments: typeof typed.function?.arguments === 'string' ? typed.function.arguments : '{}',
+    call_id: encoded?.call_id || (typeof typed.id === 'string' ? typed.id : `toolu_${index}`),
+    name: typeof typed.function?.name === 'string' ? typed.function.name : encoded?.name || '',
+    arguments: typeof typed.function?.arguments === 'string' ? typed.function.arguments : encoded?.arguments || '{}',
   };
 }
 
@@ -258,6 +265,9 @@ export function mapFinishReason(reason: unknown): string | null {
   }
   if (reason === 'tool_calls') {
     return 'tool_use';
+  }
+  if (reason === 'length' || reason === 'max_output_tokens') {
+    return 'max_tokens';
   }
   return typeof reason === 'string' ? reason : null;
 }
