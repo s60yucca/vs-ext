@@ -35,6 +35,11 @@ export type ConfigPanelMessage = {
     type: 'toggleMapper';
     enabled: boolean;
 } | {
+    type: 'toggleDebugLogging';
+    enabled: boolean;
+} | {
+    type: 'clearDebugLogs';
+} | {
     type: 'ready';
 };
 export type ConfigPanelResponse = {
@@ -43,10 +48,13 @@ export type ConfigPanelResponse = {
     lmProvider: LMProviderConfig;
     hasApiKey: boolean;
     mapperEnabled: boolean;
+    debugLoggingEnabled: boolean;
     version?: string;
 } | {
     type: 'saved';
-    scope: 'configs' | 'provider' | 'mapper';
+    scope: 'configs' | 'provider' | 'mapper' | 'debugLogging';
+} | {
+    type: 'logsCleared';
 } | {
     type: 'error';
     message: string;

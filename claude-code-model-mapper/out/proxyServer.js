@@ -202,7 +202,7 @@ class ProxyServer extends events_1.EventEmitter {
         const url = this.providerConfig.isFullEndpoint
             ? new URL(this.providerConfig.baseUrl)
             : (0, urlBuilder_1.buildUpstreamUrl)(this.providerConfig.baseUrl, rewrittenUrl);
-        (0, debugLogger_1.appendProxyDebug)(`\n\n--- NEW REQUEST TO: ${url.toString()} ---\n${(0, requestSummary_1.summarizeOutboundBody)(body)}\n`);
+        (0, debugLogger_1.appendProxyDebug)(`[${id}] request url=${url.toString()} ${(0, requestSummary_1.summarizeOutboundBody)(body)}`);
         const isHttps = url.protocol === 'https:';
         const transport = isHttps ? https : http;
         const headers = (0, headerBuilder_1.buildUpstreamHeaders)(req.headers, this.providerConfig, this.apiKey, Buffer.byteLength(body), convertResponse);
@@ -235,8 +235,10 @@ class ProxyServer extends events_1.EventEmitter {
             res.writeHead(proxyRes.statusCode || 200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
             const model = JSON.parse(requestBody).model || '';
             (0, streamingResponseAdapter_1.streamOpenAIAsAnthropic)(upstream, res, { model }).then(() => {
+                (0, debugLogger_1.appendProxyDebug)(`[${id}] completed status=${proxyRes.statusCode || 200} streaming=true`);
                 this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
             }).catch(error => {
+                (0, debugLogger_1.appendProxyDebug)(`[${id}] stream-error error=${String(error)}`);
                 this.emitUpdate(id, { status: 'error', error: String(error), endTime: Date.now() });
             });
             return;
@@ -247,7 +249,10 @@ class ProxyServer extends events_1.EventEmitter {
         }
         res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
         proxyRes.pipe(res);
-        proxyRes.on('end', () => this.emitUpdate(id, { status: 'completed', endTime: Date.now() }));
+        proxyRes.on('end', () => {
+            (0, debugLogger_1.appendProxyDebug)(`[${id}] completed status=${proxyRes.statusCode || 200} streaming=false passthrough=true`);
+            this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+        });
     }
     forwardNonStreamingResponse(upstream, proxyRes, res, id) {
         let responseBody = '';
@@ -266,6 +271,7 @@ class ProxyServer extends events_1.EventEmitter {
                 res.writeHead(proxyRes.statusCode || 200, (0, responseHeaders_1.buildDecodedResponseHeaders)(proxyRes.headers, responseBody));
                 res.end(responseBody);
             }
+            (0, debugLogger_1.appendProxyDebug)(`[${id}] completed status=${proxyRes.statusCode || 200} streaming=false converted=true`);
             this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
         });
     }
@@ -281,7 +287,7 @@ class ProxyServer extends events_1.EventEmitter {
             catch {
                 // Keep the HTTP status and URL fallback.
             }
-            (0, debugLogger_1.appendProxyDebug)(`--- UPSTREAM ERROR ${proxyRes.statusCode} ---\n${responseBody}\n`);
+            (0, debugLogger_1.appendProxyDebug)(`[${id}] upstream-error status=${proxyRes.statusCode || 500} url=${url.toString()} error=${errorMessage}`);
             res.writeHead(proxyRes.statusCode || 500, (0, responseHeaders_1.buildDecodedResponseHeaders)(proxyRes.headers, responseBody));
             res.end(responseBody);
             this.emitUpdate(id, { status: 'error', error: errorMessage, endTime: Date.now() });

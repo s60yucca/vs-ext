@@ -42,6 +42,7 @@ const configStore_1 = require("./configStore");
 const proxyServer_1 = require("./proxyServer");
 const statusBar_1 = require("./statusBar");
 const trafficPanel_1 = require("./trafficPanel");
+const debugLogger_1 = require("./proxy/debugLogger");
 let activeProxy;
 let activeEnvironment;
 async function activate(context) {
@@ -53,6 +54,7 @@ async function activate(context) {
     const statusBar = new statusBar_1.StatusBar();
     activeProxy = proxy;
     activeEnvironment = environment;
+    (0, debugLogger_1.setProxyDebugEnabled)(store.isDebugLoggingEnabled());
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(trafficPanel_1.TrafficPanel.viewId, trafficPanel), vscode.window.registerWebviewViewProvider(configPanel_1.ConfigPanel.viewId, configPanel), statusBar);
     proxy.on('requestEvent', (event) => trafficPanel.addRequest(event));
     proxy.on('requestUpdate', ({ id, update }) => {
@@ -123,8 +125,19 @@ async function activate(context) {
     configPanel.onMapperToggled(async () => {
         await applyConfiguredState(true);
     });
-    context.subscriptions.push(store.onDidChange(() => { void applyConfiguredState(false); }));
-    context.subscriptions.push(vscode.commands.registerCommand('claudeCodeModelMapper.enableMapper', () => setMapperEnabled(true, true)), vscode.commands.registerCommand('claudeCodeModelMapper.disableMapper', () => setMapperEnabled(false, true)), vscode.commands.registerCommand('claudeCodeModelMapper.toggleMapper', () => setMapperEnabled(!store.isMapperEnabled(), true)), vscode.commands.registerCommand('claudeCodeModelMapper.startProxy', () => setMapperEnabled(true, true)), vscode.commands.registerCommand('claudeCodeModelMapper.stopProxy', () => setMapperEnabled(false, true)), vscode.commands.registerCommand('claudeCodeModelMapper.openTrafficPanel', () => {
+    context.subscriptions.push(store.onDidChange(() => {
+        (0, debugLogger_1.setProxyDebugEnabled)(store.isDebugLoggingEnabled());
+        void applyConfiguredState(false);
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('claudeCodeModelMapper.enableMapper', () => setMapperEnabled(true, true)), vscode.commands.registerCommand('claudeCodeModelMapper.disableMapper', () => setMapperEnabled(false, true)), vscode.commands.registerCommand('claudeCodeModelMapper.toggleMapper', () => setMapperEnabled(!store.isMapperEnabled(), true)), vscode.commands.registerCommand('claudeCodeModelMapper.startProxy', () => setMapperEnabled(true, true)), vscode.commands.registerCommand('claudeCodeModelMapper.stopProxy', () => setMapperEnabled(false, true)), vscode.commands.registerCommand('claudeCodeModelMapper.toggleDebugLogging', async () => {
+        const enabled = !store.isDebugLoggingEnabled();
+        await store.setDebugLoggingEnabled(enabled);
+        (0, debugLogger_1.setProxyDebugEnabled)(enabled);
+        vscode.window.showInformationMessage(`Model Mapper debug logging ${enabled ? 'enabled' : 'disabled'}.`);
+    }), vscode.commands.registerCommand('claudeCodeModelMapper.clearDebugLogs', async () => {
+        await (0, debugLogger_1.clearProxyDebugLogs)();
+        vscode.window.showInformationMessage('Model Mapper debug logs cleared.');
+    }), vscode.commands.registerCommand('claudeCodeModelMapper.openTrafficPanel', () => {
         void vscode.commands.executeCommand('claudeCodeModelMapper.trafficPanel.focus');
     }), vscode.commands.registerCommand('claudeCodeModelMapper.openConfigPanel', () => {
         void vscode.commands.executeCommand('claudeCodeModelMapper.configPanel.focus');

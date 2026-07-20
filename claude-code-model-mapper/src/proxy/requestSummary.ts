@@ -5,26 +5,29 @@ export function summarizeOutboundBody(body: string): string {
     const messages = parsed.messages;
     const inputItems = Array.isArray(input) ? input : [];
     const messageItems = Array.isArray(messages) ? messages : [];
-    const inputWithToolCalls = inputItems
-      .map((item, index) => item && typeof item === 'object' && 'tool_calls' in item ? index : -1)
-      .filter(index => index >= 0);
+    const inputWithToolCalls = inputItems.filter(
+      item => item && typeof item === 'object' && 'tool_calls' in item
+    ).length;
     const responsesFunctionCalls = countInputType(inputItems, 'function_call');
     const responsesFunctionOutputs = countInputType(inputItems, 'function_call_output');
-    const inputTypes = inputItems.map(item => {
+    const inputTypeCounts: Record<string, number> = {};
+    for (const item of inputItems) {
       if (!item || typeof item !== 'object') {
-        return typeof item;
+        inputTypeCounts[typeof item] = (inputTypeCounts[typeof item] || 0) + 1;
+        continue;
       }
       const typed = item as { type?: unknown; role?: unknown };
-      return String(typed.type || typed.role || 'object');
-    });
+      const type = String(typed.type || typed.role || 'object');
+      inputTypeCounts[type] = (inputTypeCounts[type] || 0) + 1;
+    }
     return JSON.stringify({
       model: parsed.model,
       hasMessages: Array.isArray(messages),
       messageCount: messageItems.length,
       hasInput: Array.isArray(input),
       inputCount: inputItems.length,
-      inputTypes,
-      inputWithToolCalls,
+      inputTypeCounts,
+      inputWithToolCallsCount: inputWithToolCalls,
       responsesFunctionCalls,
       responsesFunctionOutputs,
       toolCount: Array.isArray(parsed.tools) ? parsed.tools.length : 0,
@@ -40,4 +43,3 @@ export function summarizeOutboundBody(body: string): string {
 function countInputType(items: unknown[], type: string): number {
   return items.filter(item => item && typeof item === 'object' && (item as { type?: unknown }).type === type).length;
 }
-

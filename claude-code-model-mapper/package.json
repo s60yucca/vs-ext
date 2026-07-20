@@ -2,8 +2,9 @@
   "name": "claude-code-model-mapper",
   "displayName": "Claude Code Model Mapper",
   "description": "Map Claude Code models to alternative LLM providers via a local proxy server",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "publisher": "thohoang",
+  "icon": "images/icon.png",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0"
@@ -43,6 +44,16 @@
         "category": "Claude Code Model Mapper"
       },
       {
+        "command": "claudeCodeModelMapper.toggleDebugLogging",
+        "title": "Toggle Debug Logging",
+        "category": "Claude Code Model Mapper"
+      },
+      {
+        "command": "claudeCodeModelMapper.clearDebugLogs",
+        "title": "Clear Debug Logs",
+        "category": "Claude Code Model Mapper"
+      },
+      {
         "command": "claudeCodeModelMapper.openTrafficPanel",
         "title": "Open Traffic Panel",
         "category": "Claude Code Model Mapper"
@@ -70,6 +81,11 @@
           "type": "number",
           "default": 3466,
           "description": "Port tối đa trong dải thử."
+        },
+        "claudeCodeModelMapper.debugLoggingEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Write metadata-only proxy diagnostics to a rotating local log. Enable only while debugging."
         },
         "claudeCodeModelMapper.modelConfigs": {
           "type": "array",

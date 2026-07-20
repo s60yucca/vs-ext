@@ -37,6 +37,7 @@ exports.ConfigPanel = void 0;
 const vscode = __importStar(require("vscode"));
 const modelConfigDefaults_1 = require("./modelConfigDefaults");
 const validation_1 = require("./validation");
+const debugLogger_1 = require("./proxy/debugLogger");
 class ConfigPanel {
     constructor(store, extensionUri) {
         this.store = store;
@@ -67,6 +68,16 @@ class ConfigPanel {
             else if (msg.type === 'toggleMapper') {
                 await this.handleToggleMapper(msg.enabled);
             }
+            else if (msg.type === 'toggleDebugLogging') {
+                await this.store.setDebugLoggingEnabled(msg.enabled);
+                (0, debugLogger_1.setProxyDebugEnabled)(msg.enabled);
+                this.post({ type: 'saved', scope: 'debugLogging' });
+                await this.sendInit();
+            }
+            else if (msg.type === 'clearDebugLogs') {
+                await (0, debugLogger_1.clearProxyDebugLogs)();
+                this.post({ type: 'logsCleared' });
+            }
         });
     }
     async sendInit() {
@@ -78,7 +89,7 @@ class ConfigPanel {
         const lmProvider = this.store.getLMProviderConfig();
         const apiKey = await this.store.getApiKey();
         const version = vscode.extensions.getExtension('thohoang.claude-code-model-mapper')?.packageJSON?.version || 'unknown';
-        this.post({ type: 'init', configs, lmProvider, hasApiKey: !!apiKey, mapperEnabled: this.store.isMapperEnabled(), version });
+        this.post({ type: 'init', configs, lmProvider, hasApiKey: !!apiKey, mapperEnabled: this.store.isMapperEnabled(), debugLoggingEnabled: this.store.isDebugLoggingEnabled(), version });
     }
     async handleSaveConfigs(configs) {
         for (const c of configs) {
@@ -245,6 +256,15 @@ function getHtml(webview, extensionUri) {
   <div class="hint">For Azure, set Base URL to the full endpoint (e.g. <code>https://YOUR.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-08-01-preview</code>), Auth Header to <code>api-key</code>, and check Full endpoint.</div>
   <div id="provMsg"></div>
   <button id="saveProvBtn" style="margin-top:8px">Lưu provider</button>
+</div>
+<div class="section">
+  <h3>Debug Logs</h3>
+  <div class="mode-switch">
+    <label><input type="checkbox" id="debugLoggingEnabled" style="width:auto"> Enable debug logging</label>
+    <button class="secondary" id="clearDebugLogsBtn">Clear logs</button>
+  </div>
+  <div class="hint">Off by default. Logs contain metadata only and rotate at 2 MB.</div>
+  <div id="debugLogMsg"></div>
 </div>
 <script src="${scriptUri}"></script>
 </body>

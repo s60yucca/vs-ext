@@ -1,5 +1,4 @@
 import * as http from 'http';
-import { appendProxyDebug } from './debugLogger';
 import { mapFinishReason, ResponsesFunctionCallItem } from './responsesAdapter';
 import { extractDeltaText, StreamingVisibleTextAdapter } from './textAdapter';
 import { encodeToolUseId } from './toolCallCodec';
@@ -46,7 +45,6 @@ export function streamOpenAIAsAnthropic(
     const writeEvent = (event: string, data: Record<string, unknown>): void => {
       if (res.writableEnded) { return; }
       const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-      appendProxyDebug(`OUT: ${payload}`);
       res.write(payload);
     };
 
@@ -147,7 +145,6 @@ export function streamOpenAIAsAnthropic(
 
     upstream.on('data', (chunkBuffer: Buffer | string) => {
       const chunkText = chunkBuffer.toString();
-      appendProxyDebug(chunkText);
       buffer += chunkText;
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';

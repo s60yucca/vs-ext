@@ -4,7 +4,6 @@ type EnvironmentVariable = { name: string; value: string };
 type EnvironmentSnapshot = {
   claudeVariables: EnvironmentVariable[];
   terminalVariables: Record<string, string>;
-  workspaceVariables: Record<string, string>;
 };
 
 const SNAPSHOT_KEY = 'claudeCodeModelMapper.environmentSnapshot';
@@ -35,12 +34,6 @@ export class ClaudeEnvironmentManager {
         ANTHROPIC_API_KEY: DUMMY_KEY,
         ANTHROPIC_AUTH_TOKEN: '',
       }),
-      this.updateWorkspaceVariables({
-        ...removeMapperRecord(snapshot.workspaceVariables),
-        ANTHROPIC_BASE_URL: proxyUrl,
-        ANTHROPIC_API_KEY: DUMMY_KEY,
-        ANTHROPIC_AUTH_TOKEN: '',
-      }),
     ]);
   }
 
@@ -51,7 +44,6 @@ export class ClaudeEnvironmentManager {
     await Promise.all([
       this.updateClaudeVariables(removeMapperClaudeVariables(restore.claudeVariables)),
       this.updateTerminalVariables(removeMapperRecord(restore.terminalVariables)),
-      this.updateWorkspaceVariables(removeMapperRecord(restore.workspaceVariables)),
     ]);
     await this.context.workspaceState.update(SNAPSHOT_KEY, undefined);
   }
@@ -63,13 +55,9 @@ export class ClaudeEnvironmentManager {
     const terminalVariables = vscode.workspace
       .getConfiguration('terminal.integrated.env')
       .get<Record<string, string>>(this.platform, {});
-    const workspaceVariables = vscode.workspace
-      .getConfiguration()
-      .get<Record<string, string>>('env', {});
     return {
       claudeVariables: removeMapperClaudeVariables(claudeVariables),
       terminalVariables: removeMapperRecord(terminalVariables),
-      workspaceVariables: removeMapperRecord(workspaceVariables),
     };
   }
 
@@ -85,11 +73,6 @@ export class ClaudeEnvironmentManager {
       .update(this.platform, variables, vscode.ConfigurationTarget.Workspace);
   }
 
-  private updateWorkspaceVariables(variables: Record<string, string>): Thenable<void> {
-    return vscode.workspace
-      .getConfiguration()
-      .update('env', variables, vscode.ConfigurationTarget.Workspace);
-  }
 }
 
 function removeMapperClaudeVariables(variables: EnvironmentVariable[]): EnvironmentVariable[] {

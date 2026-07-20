@@ -5,25 +5,19 @@
       <stop offset="0.52" stop-color="#6D5EF8"/>
       <stop offset="1" stop-color="#19C7B7"/>
     </linearGradient>
-    <linearGradient id="card" x1="28" y1="24" x2="100" y2="104" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.98"/>
-      <stop offset="1" stop-color="#EAF0FF" stop-opacity="0.92"/>
+    <linearGradient id="line" x1="31" y1="34" x2="96" y2="94" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DDE7FF"/>
     </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#0B1220" flood-opacity="0.24"/>
-    </filter>
   </defs>
 
-  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)"/>
-  <path d="M31 37C31 31.477 35.477 27 41 27H87C92.523 27 97 31.477 97 37V91C97 96.523 92.523 101 87 101H41C35.477 101 31 96.523 31 91V37Z" fill="url(#card)" filter="url(#shadow)"/>
-
-  <path d="M45 45H62C68.627 45 74 50.373 74 57V59" stroke="#26324D" stroke-width="7" stroke-linecap="round" fill="none"/>
-  <path d="M83 83H66C59.373 83 54 77.627 54 71V69" stroke="#26324D" stroke-width="7" stroke-linecap="round" fill="none"/>
-
-  <path d="M77 50L89 62L77 74" stroke="#26324D" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  <path d="M51 54L39 66L51 78" stroke="#26324D" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-
-  <circle cx="64" cy="64" r="9" fill="#19C7B7" stroke="#26324D" stroke-width="5"/>
-  <circle cx="45" cy="45" r="4" fill="#5B8CFF"/>
-  <circle cx="83" cy="83" r="4" fill="#6D5EF8"/>
+  <rect x="6" y="6" width="116" height="116" rx="29" fill="url(#bg)"/>
+  <rect x="15" y="15" width="98" height="98" rx="23" fill="#11182C" fill-opacity="0.9" stroke="#FFFFFF" stroke-opacity="0.18" stroke-width="2"/>
+  <circle cx="36" cy="43" r="10" fill="#5B8CFF"/>
+  <circle cx="92" cy="85" r="10" fill="#19C7B7"/>
+  <path d="M47 42H78C84.627 42 90 47.373 90 54V62" stroke="url(#line)" stroke-width="8" stroke-linecap="round" fill="none"/>
+  <path d="M81 54L90 63L99 54" stroke="url(#line)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M81 86H50C43.373 86 38 80.627 38 74V66" stroke="url(#line)" stroke-width="8" stroke-linecap="round" fill="none"/>
+  <path d="M47 74L38 65L29 74" stroke="url(#line)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <circle cx="64" cy="64" r="12" fill="#6D5EF8" stroke="#FFFFFF" stroke-width="5"/>
 </svg>

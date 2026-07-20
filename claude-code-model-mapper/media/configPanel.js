@@ -78,6 +78,10 @@
       byId('mapperState').textContent = target.checked ? 'Mapper config' : 'Claude subscription';
       return;
     }
+    if (target.id === 'debugLoggingEnabled') {
+      vscode.postMessage({ type: 'toggleDebugLogging', enabled: target.checked });
+      return;
+    }
     const index = Number(target.dataset.i);
     const field = target.dataset.f;
     if (!Number.isInteger(index) || !field || !configs[index]) return;
@@ -117,6 +121,11 @@
       var authValuePrefix = byId('authValuePrefix').value;
       var isFullEndpoint = byId('isFullEndpoint').checked;
       vscode.postMessage({ type: 'saveLMProvider', config: { baseUrl: baseUrl, nativeAnthropic: nativeAnthropic, authHeader: authHeader, authValuePrefix: authValuePrefix, isFullEndpoint: isFullEndpoint }, apiKey: apiKey });
+      return;
+    }
+
+    if (target.id === 'clearDebugLogsBtn') {
+      vscode.postMessage({ type: 'clearDebugLogs' });
       return;
     }
 
@@ -161,6 +170,7 @@
       renderMappings();
       byId('mapperEnabled').checked = !!msg.mapperEnabled;
       byId('mapperState').textContent = msg.mapperEnabled ? 'Mapper config' : 'Claude subscription';
+      byId('debugLoggingEnabled').checked = !!msg.debugLoggingEnabled;
       if (msg.lmProvider) {
         var baseUrl = msg.lmProvider.baseUrl || '';
         byId('baseUrl').value = baseUrl;
@@ -191,9 +201,16 @@
         showMsg('mapMsg', 'Da luu mappings.', false);
       } else if (msg.scope === 'mapper') {
         showMsg('mapperMsg', byId('mapperEnabled').checked ? 'Mapper enabled.' : 'Mapper disabled.', false);
+      } else if (msg.scope === 'debugLogging') {
+        showMsg('debugLogMsg', byId('debugLoggingEnabled').checked ? 'Debug logging enabled.' : 'Debug logging disabled.', false);
       } else {
         showMsg('provMsg', 'Da luu provider.', false);
       }
+      return;
+    }
+
+    if (msg.type === 'logsCleared') {
+      showMsg('debugLogMsg', 'Debug logs cleared.', false);
       return;
     }
 
@@ -201,6 +218,7 @@
       showMsg('mapMsg', msg.message, true);
       showMsg('provMsg', msg.message, true);
       showMsg('mapperMsg', msg.message, true);
+      showMsg('debugLogMsg', msg.message, true);
     }
   });
 

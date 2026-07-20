@@ -182,7 +182,7 @@ export class ProxyServer extends EventEmitter {
     const url = this.providerConfig.isFullEndpoint
       ? new URL(this.providerConfig.baseUrl)
       : buildUpstreamUrl(this.providerConfig.baseUrl, rewrittenUrl);
-    appendProxyDebug(`\n\n--- NEW REQUEST TO: ${url.toString()} ---\n${summarizeOutboundBody(body)}\n`);
+    appendProxyDebug(`[${id}] request url=${url.toString()} ${summarizeOutboundBody(body)}`);
     const isHttps = url.protocol === 'https:';
     const transport = isHttps ? https : http;
     const headers = buildUpstreamHeaders(
@@ -231,8 +231,10 @@ export class ProxyServer extends EventEmitter {
       res.writeHead(proxyRes.statusCode || 200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
       const model = (JSON.parse(requestBody).model as string) || '';
       streamOpenAIAsAnthropic(upstream, res, { model }).then(() => {
+        appendProxyDebug(`[${id}] completed status=${proxyRes.statusCode || 200} streaming=true`);
         this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
       }).catch(error => {
+        appendProxyDebug(`[${id}] stream-error error=${String(error)}`);
         this.emitUpdate(id, { status: 'error', error: String(error), endTime: Date.now() });
       });
       return;
@@ -243,7 +245,10 @@ export class ProxyServer extends EventEmitter {
     }
     res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
     proxyRes.pipe(res);
-    proxyRes.on('end', () => this.emitUpdate(id, { status: 'completed', endTime: Date.now() }));
+    proxyRes.on('end', () => {
+      appendProxyDebug(`[${id}] completed status=${proxyRes.statusCode || 200} streaming=false passthrough=true`);
+      this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
+    });
   }
 
   private forwardNonStreamingResponse(
@@ -267,6 +272,7 @@ export class ProxyServer extends EventEmitter {
         res.writeHead(proxyRes.statusCode || 200, buildDecodedResponseHeaders(proxyRes.headers, responseBody));
         res.end(responseBody);
       }
+      appendProxyDebug(`[${id}] completed status=${proxyRes.statusCode || 200} streaming=false converted=true`);
       this.emitUpdate(id, { status: 'completed', endTime: Date.now() });
     });
   }
@@ -288,7 +294,7 @@ export class ProxyServer extends EventEmitter {
       } catch {
         // Keep the HTTP status and URL fallback.
       }
-      appendProxyDebug(`--- UPSTREAM ERROR ${proxyRes.statusCode} ---\n${responseBody}\n`);
+      appendProxyDebug(`[${id}] upstream-error status=${proxyRes.statusCode || 500} url=${url.toString()} error=${errorMessage}`);
       res.writeHead(proxyRes.statusCode || 500, buildDecodedResponseHeaders(proxyRes.headers, responseBody));
       res.end(responseBody);
       this.emitUpdate(id, { status: 'error', error: errorMessage, endTime: Date.now() });

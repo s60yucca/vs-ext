@@ -3,6 +3,7 @@ import { ConfigStore } from './configStore';
 import { DEFAULT_MODEL_CONFIGS } from './modelConfigDefaults';
 import { validateModelConfig, validateBaseUrl } from './validation';
 import { ConfigPanelMessage, ConfigPanelResponse, ModelConfig, LMProviderConfig } from './types';
+import { clearProxyDebugLogs, setProxyDebugEnabled } from './proxy/debugLogger';
 
 export class ConfigPanel implements vscode.WebviewViewProvider {
   public static readonly viewId = 'claudeCodeModelMapper.configPanel';
@@ -40,6 +41,14 @@ export class ConfigPanel implements vscode.WebviewViewProvider {
         await this.handleSaveLMProvider(msg.config, msg.apiKey);
       } else if (msg.type === 'toggleMapper') {
         await this.handleToggleMapper(msg.enabled);
+      } else if (msg.type === 'toggleDebugLogging') {
+        await this.store.setDebugLoggingEnabled(msg.enabled);
+        setProxyDebugEnabled(msg.enabled);
+        this.post({ type: 'saved', scope: 'debugLogging' });
+        await this.sendInit();
+      } else if (msg.type === 'clearDebugLogs') {
+        await clearProxyDebugLogs();
+        this.post({ type: 'logsCleared' });
       }
     });
   }
@@ -53,7 +62,7 @@ export class ConfigPanel implements vscode.WebviewViewProvider {
     const lmProvider = this.store.getLMProviderConfig();
     const apiKey = await this.store.getApiKey();
     const version = vscode.extensions.getExtension('thohoang.claude-code-model-mapper')?.packageJSON?.version || 'unknown';
-    this.post({ type: 'init', configs, lmProvider, hasApiKey: !!apiKey, mapperEnabled: this.store.isMapperEnabled(), version });
+    this.post({ type: 'init', configs, lmProvider, hasApiKey: !!apiKey, mapperEnabled: this.store.isMapperEnabled(), debugLoggingEnabled: this.store.isDebugLoggingEnabled(), version });
   }
 
   private async handleSaveConfigs(configs: ModelConfig[]): Promise<void> {
@@ -218,6 +227,15 @@ function getHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   <div class="hint">For Azure, set Base URL to the full endpoint (e.g. <code>https://YOUR.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-08-01-preview</code>), Auth Header to <code>api-key</code>, and check Full endpoint.</div>
   <div id="provMsg"></div>
   <button id="saveProvBtn" style="margin-top:8px">Lưu provider</button>
+</div>
+<div class="section">
+  <h3>Debug Logs</h3>
+  <div class="mode-switch">
+    <label><input type="checkbox" id="debugLoggingEnabled" style="width:auto"> Enable debug logging</label>
+    <button class="secondary" id="clearDebugLogsBtn">Clear logs</button>
+  </div>
+  <div class="hint">Off by default. Logs contain metadata only and rotate at 2 MB.</div>
+  <div id="debugLogMsg"></div>
 </div>
 <script src="${scriptUri}"></script>
 </body>

@@ -7,6 +7,8 @@ export declare class ConfigStore {
     setModelConfigs(configs: ModelConfig[]): Promise<void>;
     isMapperEnabled(): boolean;
     setMapperEnabled(enabled: boolean): Promise<void>;
+    isDebugLoggingEnabled(): boolean;
+    setDebugLoggingEnabled(enabled: boolean): Promise<void>;
     getLMProviderConfig(): LMProviderConfig;
     setLMProviderConfig(config: LMProviderConfig): Promise<void>;
     getApiKey(): Promise<string | undefined>;

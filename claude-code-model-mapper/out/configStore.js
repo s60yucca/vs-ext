@@ -60,6 +60,12 @@ class ConfigStore {
     async setMapperEnabled(enabled) {
         await vscode.workspace.getConfiguration(CFG).update('enabled', enabled, this.getConfigurationTarget());
     }
+    isDebugLoggingEnabled() {
+        return vscode.workspace.getConfiguration(CFG).get('debugLoggingEnabled', false);
+    }
+    async setDebugLoggingEnabled(enabled) {
+        await vscode.workspace.getConfiguration(CFG).update('debugLoggingEnabled', enabled, this.getConfigurationTarget());
+    }
     getLMProviderConfig() {
         const config = vscode.workspace.getConfiguration(CFG).get('lmProvider', { baseUrl: 'https://openrouter.ai/api/v1' });
         return {
