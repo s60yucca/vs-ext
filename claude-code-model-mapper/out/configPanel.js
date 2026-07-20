@@ -45,6 +45,9 @@ class ConfigPanel {
     onConfigChanged(cb) {
         this.onConfigChangedCallback = cb;
     }
+    onMapperToggled(cb) {
+        this.onMapperToggledCallback = cb;
+    }
     resolveWebviewView(webviewView) {
         this.view = webviewView;
         webviewView.webview.options = { enableScripts: true };
@@ -61,6 +64,9 @@ class ConfigPanel {
                 vscode.window.showInformationMessage(`Đang lưu provider: ${msg.config.baseUrl}`);
                 await this.handleSaveLMProvider(msg.config, msg.apiKey);
             }
+            else if (msg.type === 'toggleMapper') {
+                await this.handleToggleMapper(msg.enabled);
+            }
         });
     }
     async sendInit() {
@@ -72,7 +78,7 @@ class ConfigPanel {
         const lmProvider = this.store.getLMProviderConfig();
         const apiKey = await this.store.getApiKey();
         const version = vscode.extensions.getExtension('thohoang.claude-code-model-mapper')?.packageJSON?.version || 'unknown';
-        this.post({ type: 'init', configs, lmProvider, hasApiKey: !!apiKey, version });
+        this.post({ type: 'init', configs, lmProvider, hasApiKey: !!apiKey, mapperEnabled: this.store.isMapperEnabled(), version });
     }
     async handleSaveConfigs(configs) {
         for (const c of configs) {
@@ -123,6 +129,18 @@ class ConfigPanel {
             this.post({ type: 'error', message: `Không lưu được provider: ${message}` });
         }
     }
+    async handleToggleMapper(enabled) {
+        try {
+            await this.store.setMapperEnabled(enabled);
+            await this.onMapperToggledCallback?.(enabled);
+            this.post({ type: 'saved', scope: 'mapper' });
+            await this.sendInit();
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            this.post({ type: 'error', message: `Không đổi được mapper mode: ${message}` });
+        }
+    }
     post(msg) {
         this.view?.webview.postMessage(msg);
     }
@@ -138,7 +156,10 @@ function getHtml(webview, extensionUri) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); background: var(--vscode-panel-background); margin: 0; padding: 8px; }
-  .dev-banner { margin-bottom: 10px; padding: 6px 8px; border: 1px solid var(--vscode-focusBorder); border-radius: 4px; font-size: 11px; color: var(--vscode-editor-foreground); background: color-mix(in srgb, var(--vscode-button-background) 18%, transparent); }
+  .release-banner { margin-bottom: 10px; padding: 6px 8px; border: 1px solid var(--vscode-focusBorder); border-radius: 4px; font-size: 11px; color: var(--vscode-editor-foreground); background: color-mix(in srgb, var(--vscode-button-background) 18%, transparent); }
+  .mode-switch { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border: 1px solid var(--vscode-panel-border, #555); border-radius: 4px; }
+  .mode-switch label { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 12px; opacity: 1; cursor: pointer; }
+  .mode-state { font-size: 11px; opacity: 0.75; text-align: right; }
   h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.7; margin: 12px 0 6px; }
   input { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, #555); padding: 4px 6px; width: 100%; box-sizing: border-box; font-size: 12px; border-radius: 2px; }
   input:focus { outline: 1px solid var(--vscode-focusBorder); }
@@ -160,7 +181,14 @@ function getHtml(webview, extensionUri) {
 </style>
 </head>
 <body>
-<div class="dev-banner" id="devBanner">DEV BUILD 2026-03-20 · local workspace build</div>
+<div class="release-banner" id="releaseBanner">Claude Code Model Mapper · Release</div>
+<div class="section">
+  <div class="mode-switch">
+    <label><input type="checkbox" id="mapperEnabled" style="width:auto"> Use Model Mapper</label>
+    <span class="mode-state" id="mapperState">Loading...</span>
+  </div>
+  <div id="mapperMsg"></div>
+</div>
 <div class="section">
   <h3>Model Mappings</h3>
   <div id="mappings"></div>

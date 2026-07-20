@@ -1,5 +1,29 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none">
-  <circle cx="8" cy="8" r="2" fill="#C5C5C5"/>
-  <path d="M8 3 L8 1 M8 15 L8 13 M3 8 L1 8 M15 8 L13 8" stroke="#C5C5C5" stroke-width="1.5" stroke-linecap="round"/>
-  <path d="M5 5 Q2 8 5 11 M11 5 Q14 8 11 11" stroke="#C5C5C5" stroke-width="1.2" stroke-linecap="round" fill="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Claude Code Model Mapper">
+  <defs>
+    <linearGradient id="bg" x1="18" y1="14" x2="112" y2="116" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5B8CFF"/>
+      <stop offset="0.52" stop-color="#6D5EF8"/>
+      <stop offset="1" stop-color="#19C7B7"/>
+    </linearGradient>
+    <linearGradient id="card" x1="28" y1="24" x2="100" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.98"/>
+      <stop offset="1" stop-color="#EAF0FF" stop-opacity="0.92"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#0B1220" flood-opacity="0.24"/>
+    </filter>
+  </defs>
+
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)"/>
+  <path d="M31 37C31 31.477 35.477 27 41 27H87C92.523 27 97 31.477 97 37V91C97 96.523 92.523 101 87 101H41C35.477 101 31 96.523 31 91V37Z" fill="url(#card)" filter="url(#shadow)"/>
+
+  <path d="M45 45H62C68.627 45 74 50.373 74 57V59" stroke="#26324D" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <path d="M83 83H66C59.373 83 54 77.627 54 71V69" stroke="#26324D" stroke-width="7" stroke-linecap="round" fill="none"/>
+
+  <path d="M77 50L89 62L77 74" stroke="#26324D" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M51 54L39 66L51 78" stroke="#26324D" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <circle cx="64" cy="64" r="9" fill="#19C7B7" stroke="#26324D" stroke-width="5"/>
+  <circle cx="45" cy="45" r="4" fill="#5B8CFF"/>
+  <circle cx="83" cy="83" r="4" fill="#6D5EF8"/>
 </svg>

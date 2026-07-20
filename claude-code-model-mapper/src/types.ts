@@ -39,12 +39,13 @@ export interface RequestEvent {
 export type ConfigPanelMessage =
   | { type: 'saveConfigs'; configs: ModelConfig[] }
   | { type: 'saveLMProvider'; config: LMProviderConfig; apiKey?: string }
+  | { type: 'toggleMapper'; enabled: boolean }
   | { type: 'ready' };
 
 // Extension → Webview
 export type ConfigPanelResponse =
-  | { type: 'init'; configs: ModelConfig[]; lmProvider: LMProviderConfig; hasApiKey: boolean; version?: string }
-  | { type: 'saved'; scope: 'configs' | 'provider' }
+  | { type: 'init'; configs: ModelConfig[]; lmProvider: LMProviderConfig; hasApiKey: boolean; mapperEnabled: boolean; version?: string }
+  | { type: 'saved'; scope: 'configs' | 'provider' | 'mapper' }
   | { type: 'error'; message: string };
 
 // Webview message protocol — Traffic Panel

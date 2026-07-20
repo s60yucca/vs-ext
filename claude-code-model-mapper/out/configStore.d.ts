@@ -5,6 +5,8 @@ export declare class ConfigStore {
     constructor(context: vscode.ExtensionContext);
     getModelConfigs(): ModelConfig[];
     setModelConfigs(configs: ModelConfig[]): Promise<void>;
+    isMapperEnabled(): boolean;
+    setMapperEnabled(enabled: boolean): Promise<void>;
     getLMProviderConfig(): LMProviderConfig;
     setLMProviderConfig(config: LMProviderConfig): Promise<void>;
     getApiKey(): Promise<string | undefined>;

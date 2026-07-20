@@ -22,6 +22,14 @@ export class ConfigStore {
     }
   }
 
+  isMapperEnabled(): boolean {
+    return vscode.workspace.getConfiguration(CFG).get<boolean>('enabled', true);
+  }
+
+  async setMapperEnabled(enabled: boolean): Promise<void> {
+    await vscode.workspace.getConfiguration(CFG).update('enabled', enabled, this.getConfigurationTarget());
+  }
+
   getLMProviderConfig(): LMProviderConfig {
     const config = vscode.workspace.getConfiguration(CFG).get<LMProviderConfig>(
       'lmProvider', { baseUrl: 'https://openrouter.ai/api/v1' }

@@ -32,6 +32,9 @@ export type ConfigPanelMessage = {
     config: LMProviderConfig;
     apiKey?: string;
 } | {
+    type: 'toggleMapper';
+    enabled: boolean;
+} | {
     type: 'ready';
 };
 export type ConfigPanelResponse = {
@@ -39,10 +42,11 @@ export type ConfigPanelResponse = {
     configs: ModelConfig[];
     lmProvider: LMProviderConfig;
     hasApiKey: boolean;
+    mapperEnabled: boolean;
     version?: string;
 } | {
     type: 'saved';
-    scope: 'configs' | 'provider';
+    scope: 'configs' | 'provider' | 'mapper';
 } | {
     type: 'error';
     message: string;

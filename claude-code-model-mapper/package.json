@@ -1,8 +1,8 @@
 {
   "name": "claude-code-model-mapper",
-  "displayName": "Claude Code Model Mapper DEV",
+  "displayName": "Claude Code Model Mapper",
   "description": "Map Claude Code models to alternative LLM providers via a local proxy server",
-  "version": "0.3.31",
+  "version": "1.0.1",
   "publisher": "thohoang",
   "license": "MIT",
   "engines": {
@@ -17,6 +17,21 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "claudeCodeModelMapper.enableMapper",
+        "title": "Enable Mapper (Use Mapper Config)",
+        "category": "Claude Code Model Mapper"
+      },
+      {
+        "command": "claudeCodeModelMapper.disableMapper",
+        "title": "Disable Mapper (Use Claude Subscription)",
+        "category": "Claude Code Model Mapper"
+      },
+      {
+        "command": "claudeCodeModelMapper.toggleMapper",
+        "title": "Toggle Mapper / Claude Subscription",
+        "category": "Claude Code Model Mapper"
+      },
       {
         "command": "claudeCodeModelMapper.startProxy",
         "title": "Start Proxy",
@@ -41,6 +56,11 @@
     "configuration": {
       "title": "Claude Code Model Mapper",
       "properties": {
+        "claudeCodeModelMapper.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Model Mapper. When disabled, restore Claude Code environment settings so new sessions use the Claude subscription."
+        },
         "claudeCodeModelMapper.proxyPort": {
           "type": "number",
           "default": 3456,
@@ -102,7 +122,7 @@
       "activitybar": [
         {
           "id": "claudeCodeModelMapper",
-          "title": "CCMM DEV",
+          "title": "Model Mapper",
           "icon": "images/icon.svg"
         }
       ]

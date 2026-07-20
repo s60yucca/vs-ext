@@ -73,6 +73,11 @@
   document.addEventListener('change', function (event) {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
+    if (target.id === 'mapperEnabled') {
+      vscode.postMessage({ type: 'toggleMapper', enabled: target.checked });
+      byId('mapperState').textContent = target.checked ? 'Mapper config' : 'Claude subscription';
+      return;
+    }
     const index = Number(target.dataset.i);
     const field = target.dataset.f;
     if (!Number.isInteger(index) || !field || !configs[index]) return;
@@ -154,6 +159,8 @@
     if (msg.type === 'init') {
       configs = msg.configs || [];
       renderMappings();
+      byId('mapperEnabled').checked = !!msg.mapperEnabled;
+      byId('mapperState').textContent = msg.mapperEnabled ? 'Mapper config' : 'Claude subscription';
       if (msg.lmProvider) {
         var baseUrl = msg.lmProvider.baseUrl || '';
         byId('baseUrl').value = baseUrl;
@@ -170,8 +177,8 @@
         if (byId('isFullEndpoint')) {
           byId('isFullEndpoint').checked = !!msg.lmProvider.isFullEndpoint;
         }
-        var v = msg.version ? 'v' + msg.version : 'DEV BUILD';
-        byId('devBanner').textContent = v + ' · mappings=' + configs.length + ' · baseUrl=' + (baseUrl || '(empty)');
+        var v = msg.version ? 'Release v' + msg.version : 'Release';
+        byId('releaseBanner').textContent = v + ' · mappings=' + configs.length + ' · baseUrl=' + (baseUrl || '(empty)');
       }
       if (msg.hasApiKey) {
         byId('apiKey').placeholder = '********  (saved - leave blank to keep)';
@@ -182,6 +189,8 @@
     if (msg.type === 'saved') {
       if (msg.scope === 'configs') {
         showMsg('mapMsg', 'Da luu mappings.', false);
+      } else if (msg.scope === 'mapper') {
+        showMsg('mapperMsg', byId('mapperEnabled').checked ? 'Mapper enabled.' : 'Mapper disabled.', false);
       } else {
         showMsg('provMsg', 'Da luu provider.', false);
       }
@@ -191,6 +200,7 @@
     if (msg.type === 'error') {
       showMsg('mapMsg', msg.message, true);
       showMsg('provMsg', msg.message, true);
+      showMsg('mapperMsg', msg.message, true);
     }
   });
 

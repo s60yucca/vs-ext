@@ -36,187 +36,105 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
+const claudeEnvironment_1 = require("./claudeEnvironment");
+const configPanel_1 = require("./configPanel");
 const configStore_1 = require("./configStore");
 const proxyServer_1 = require("./proxyServer");
-const trafficPanel_1 = require("./trafficPanel");
-const configPanel_1 = require("./configPanel");
 const statusBar_1 = require("./statusBar");
+const trafficPanel_1 = require("./trafficPanel");
 let activeProxy;
-// Store original Claude Code settings before overwriting
-let originalSettings = {};
+let activeEnvironment;
 async function activate(context) {
     const store = new configStore_1.ConfigStore(context);
     const proxy = new proxyServer_1.ProxyServer();
-    activeProxy = proxy;
+    const environment = new claudeEnvironment_1.ClaudeEnvironmentManager(context);
     const trafficPanel = new trafficPanel_1.TrafficPanel();
     const configPanel = new configPanel_1.ConfigPanel(store, context.extensionUri);
     const statusBar = new statusBar_1.StatusBar();
-    // Register webview providers
+    activeProxy = proxy;
+    activeEnvironment = environment;
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(trafficPanel_1.TrafficPanel.viewId, trafficPanel), vscode.window.registerWebviewViewProvider(configPanel_1.ConfigPanel.viewId, configPanel), statusBar);
-    // Wire proxy events → traffic panel
-    proxy.on('requestEvent', (event) => {
-        trafficPanel.addRequest(event);
-    });
+    proxy.on('requestEvent', (event) => trafficPanel.addRequest(event));
     proxy.on('requestUpdate', ({ id, update }) => {
         trafficPanel.updateRequest(id, update);
     });
-    proxy.on('restarted', (port) => {
+    proxy.on('restarted', async (port) => {
+        if (!store.isMapperEnabled()) {
+            return;
+        }
+        await environment.enable(port);
         statusBar.setRunning(port);
-        vscode.window.showInformationMessage(`Proxy server đã khởi động lại trên port ${port}.`);
+        vscode.window.showInformationMessage(`Model Mapper restarted on port ${port}.`);
     });
-    proxy.on('fatalError', (err) => {
-        statusBar.setError(err.message);
-        vscode.window.showErrorMessage(`Proxy server lỗi: ${err.message}`, 'Thử lại', 'Xem log').then(choice => {
-            if (choice === 'Thử lại') {
-                startProxy();
+    proxy.on('fatalError', (error) => {
+        statusBar.setError(error.message);
+        vscode.window.showErrorMessage(`Model Mapper error: ${error.message}`, 'Retry').then(choice => {
+            if (choice === 'Retry') {
+                void setMapperEnabled(true, true);
             }
         });
     });
-    // Wire config changes → proxy update
     const syncProxyConfig = async () => {
         const apiKey = await store.getApiKey() ?? '';
         proxy.updateConfig(store.getModelConfigs(), store.getLMProviderConfig(), apiKey);
     };
-    configPanel.onConfigChanged(syncProxyConfig);
-    context.subscriptions.push(store.onDidChange(syncProxyConfig));
-    // Start proxy
-    const startProxy = async () => {
-        try {
-            await syncProxyConfig();
-            const port = await proxy.start(store.getProxyOptions());
-            statusBar.setRunning(port);
-            configureClaudeCode(port);
-            vscode.window.showInformationMessage(`Claude Code Model Mapper: Proxy đang chạy tại http://127.0.0.1:${port}`, 'Copy URL').then(choice => {
-                if (choice === 'Copy URL') {
-                    vscode.env.clipboard.writeText(`http://127.0.0.1:${port}`);
-                }
-            });
-        }
-        catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            statusBar.setError(msg);
-            vscode.window.showErrorMessage(`Không thể khởi động proxy: ${msg}`, 'Thử lại').then(choice => { if (choice === 'Thử lại') {
-                startProxy();
-            } });
+    const enableMapper = async (showMessage) => {
+        await syncProxyConfig();
+        const port = proxy.isRunning && proxy.actualPort !== null
+            ? proxy.actualPort
+            : await proxy.start(store.getProxyOptions());
+        await environment.enable(port);
+        statusBar.setRunning(port);
+        if (showMessage) {
+            vscode.window.showInformationMessage(`Model Mapper enabled at http://127.0.0.1:${port}. New Claude sessions will use mapper config.`);
         }
     };
-    const stopProxy = async () => {
-        await proxy.stop();
+    const disableMapper = async (showMessage) => {
+        if (proxy.isRunning) {
+            await proxy.stop();
+        }
+        await environment.disable();
         statusBar.setStopped();
-        await restoreOriginalSettings();
-        vscode.window.showInformationMessage('Claude Code Model Mapper: Proxy đã dừng. Claude Code sẽ dùng API key gốc.');
+        if (showMessage) {
+            vscode.window.showInformationMessage('Model Mapper disabled. New Claude sessions will use your Claude subscription.');
+        }
     };
-    // Register commands
-    context.subscriptions.push(vscode.commands.registerCommand('claudeCodeModelMapper.startProxy', startProxy), vscode.commands.registerCommand('claudeCodeModelMapper.stopProxy', stopProxy), vscode.commands.registerCommand('claudeCodeModelMapper.openTrafficPanel', () => {
-        vscode.commands.executeCommand('claudeCodeModelMapper.trafficPanel.focus');
+    let transition = Promise.resolve();
+    const applyConfiguredState = (showMessage = false) => {
+        transition = transition.then(async () => {
+            if (store.isMapperEnabled()) {
+                await enableMapper(showMessage);
+            }
+            else {
+                await disableMapper(showMessage);
+            }
+        }).catch(error => {
+            const message = error instanceof Error ? error.message : String(error);
+            statusBar.setError(message);
+            vscode.window.showErrorMessage(`Cannot change Model Mapper mode: ${message}`);
+        });
+        return transition;
+    };
+    const setMapperEnabled = async (enabled, showMessage = true) => {
+        await store.setMapperEnabled(enabled);
+        await applyConfiguredState(showMessage);
+    };
+    configPanel.onConfigChanged(syncProxyConfig);
+    configPanel.onMapperToggled(async () => {
+        await applyConfiguredState(true);
+    });
+    context.subscriptions.push(store.onDidChange(() => { void applyConfiguredState(false); }));
+    context.subscriptions.push(vscode.commands.registerCommand('claudeCodeModelMapper.enableMapper', () => setMapperEnabled(true, true)), vscode.commands.registerCommand('claudeCodeModelMapper.disableMapper', () => setMapperEnabled(false, true)), vscode.commands.registerCommand('claudeCodeModelMapper.toggleMapper', () => setMapperEnabled(!store.isMapperEnabled(), true)), vscode.commands.registerCommand('claudeCodeModelMapper.startProxy', () => setMapperEnabled(true, true)), vscode.commands.registerCommand('claudeCodeModelMapper.stopProxy', () => setMapperEnabled(false, true)), vscode.commands.registerCommand('claudeCodeModelMapper.openTrafficPanel', () => {
+        void vscode.commands.executeCommand('claudeCodeModelMapper.trafficPanel.focus');
     }), vscode.commands.registerCommand('claudeCodeModelMapper.openConfigPanel', () => {
-        vscode.commands.executeCommand('claudeCodeModelMapper.configPanel.focus');
+        void vscode.commands.executeCommand('claudeCodeModelMapper.configPanel.focus');
     }));
-    // Auto-start on activation
-    await startProxy();
-    // After proxy starts, configure Claude Code env
-    proxy.once('restarted', (port) => configureClaudeCode(port));
-}
-function saveOriginalSettings() {
-    // Only save if not already saved (first time only)
-    if (originalSettings.baseUrl !== undefined)
-        return;
-    const claudeCodeConfig = vscode.workspace.getConfiguration('claudeCode');
-    const currentVars = claudeCodeConfig.get('environmentVariables', []);
-    originalSettings.baseUrl = currentVars.find(v => v.name === 'ANTHROPIC_BASE_URL')?.value;
-    originalSettings.apiKey = currentVars.find(v => v.name === 'ANTHROPIC_API_KEY')?.value;
-    originalSettings.authToken = currentVars.find(v => v.name === 'ANTHROPIC_AUTH_TOKEN')?.value;
-}
-function configureClaudeCode(port) {
-    const url = `http://127.0.0.1:${port}`;
-    // Dummy key must be exactly 108 characters (13 prefix + 95 alphanumeric/hyphens) to pass Claude Code's regex validation
-    const dummyKey = 'sk-ant-api03-dummykey000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
-    // Save original settings before overwriting (first time only)
-    saveOriginalSettings();
-    const terminalEnv = vscode.workspace.getConfiguration('terminal.integrated.env');
-    const envConfig = vscode.workspace.getConfiguration();
-    const claudeCodeConfig = vscode.workspace.getConfiguration('claudeCode');
-    const platform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'osx' : 'linux';
-    const current = terminalEnv.get(platform, {});
-    terminalEnv.update(platform, {
-        ...current,
-        ANTHROPIC_BASE_URL: url,
-        ANTHROPIC_API_KEY: dummyKey,
-        ANTHROPIC_AUTH_TOKEN: '', // clear conflicting token
-    }, vscode.ConfigurationTarget.Workspace);
-    const currentEnv = envConfig.get('env', {});
-    envConfig.update('env', {
-        ...currentEnv,
-        ANTHROPIC_BASE_URL: url,
-        ANTHROPIC_API_KEY: dummyKey,
-        ANTHROPIC_AUTH_TOKEN: '',
-    }, vscode.ConfigurationTarget.Workspace);
-    const currentClaudeVars = claudeCodeConfig.get('environmentVariables', []);
-    const mergedClaudeVars = upsertEnvironmentVariable(currentClaudeVars, 'ANTHROPIC_BASE_URL', url);
-    const withApiKey = upsertEnvironmentVariable(mergedClaudeVars, 'ANTHROPIC_API_KEY', dummyKey);
-    const finalClaudeVars = upsertEnvironmentVariable(withApiKey, 'ANTHROPIC_AUTH_TOKEN', '');
-    claudeCodeConfig.update('environmentVariables', finalClaudeVars, vscode.ConfigurationTarget.Workspace);
-}
-async function restoreOriginalSettings() {
-    // Always clean up even if we don't have original settings saved in memory
-    // This handles the case where the user disabled the extension but the dummy keys were left behind
-    const dummyKey = 'sk-ant-api03-dummykey000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
-    const claudeCodeConfig = vscode.workspace.getConfiguration('claudeCode');
-    let currentVars = claudeCodeConfig.get('environmentVariables', []);
-    // Remove ANTHROPIC_* variables injected by proxy
-    currentVars = currentVars.filter(v => !v.name.startsWith('ANTHROPIC_'));
-    // Restore original settings if they exist
-    if (originalSettings.baseUrl) {
-        currentVars.push({ name: 'ANTHROPIC_BASE_URL', value: originalSettings.baseUrl });
-    }
-    if (originalSettings.apiKey) {
-        currentVars.push({ name: 'ANTHROPIC_API_KEY', value: originalSettings.apiKey });
-    }
-    if (originalSettings.authToken) {
-        currentVars.push({ name: 'ANTHROPIC_AUTH_TOKEN', value: originalSettings.authToken });
-    }
-    await claudeCodeConfig.update('environmentVariables', currentVars, vscode.ConfigurationTarget.Workspace);
-    // Restore terminal environment
-    const terminalEnv = vscode.workspace.getConfiguration('terminal.integrated.env');
-    const platform = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'osx' : 'linux';
-    const current = terminalEnv.get(platform, {});
-    const updatedTerminalEnv = { ...current };
-    // Clean up injected keys
-    if (updatedTerminalEnv.ANTHROPIC_BASE_URL && updatedTerminalEnv.ANTHROPIC_BASE_URL.includes('127.0.0.1')) {
-        delete updatedTerminalEnv.ANTHROPIC_BASE_URL;
-    }
-    if (updatedTerminalEnv.ANTHROPIC_API_KEY === dummyKey) {
-        delete updatedTerminalEnv.ANTHROPIC_API_KEY;
-    }
-    if (originalSettings.baseUrl)
-        updatedTerminalEnv.ANTHROPIC_BASE_URL = originalSettings.baseUrl;
-    if (originalSettings.apiKey)
-        updatedTerminalEnv.ANTHROPIC_API_KEY = originalSettings.apiKey;
-    if (originalSettings.authToken)
-        updatedTerminalEnv.ANTHROPIC_AUTH_TOKEN = originalSettings.authToken;
-    await terminalEnv.update(platform, updatedTerminalEnv, vscode.ConfigurationTarget.Workspace);
-    // Restore global env.custom
-    const envConfig = vscode.workspace.getConfiguration('env');
-    const currentEnv = envConfig.get('custom', {});
-    const updatedEnv = { ...currentEnv };
-    if (updatedEnv.ANTHROPIC_BASE_URL && updatedEnv.ANTHROPIC_BASE_URL.includes('127.0.0.1')) {
-        delete updatedEnv.ANTHROPIC_BASE_URL;
-    }
-    if (updatedEnv.ANTHROPIC_API_KEY === dummyKey) {
-        delete updatedEnv.ANTHROPIC_API_KEY;
-    }
-    await envConfig.update('custom', updatedEnv, vscode.ConfigurationTarget.Workspace);
-    // Clear the stored original settings
-    originalSettings = {};
-}
-function upsertEnvironmentVariable(vars, name, value) {
-    const filtered = vars.filter(entry => entry.name !== name);
-    filtered.push({ name, value });
-    return filtered;
+    await applyConfiguredState(false);
 }
 async function deactivate() {
     await activeProxy?.stop();
+    await activeEnvironment?.disable();
     activeProxy = undefined;
-    await restoreOriginalSettings();
+    activeEnvironment = undefined;
 }
 //# sourceMappingURL=extension.js.map
